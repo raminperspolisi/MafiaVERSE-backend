@@ -579,6 +579,8 @@ function generateGameId() {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 سرور روی پورت ${PORT} راه‌اندازی شد`);
+  console.log(`🌐 قابل دسترسی از: http://localhost:${PORT}`);
+  console.log(`📱 برای موبایل: http://YOUR_IP_ADDRESS:${PORT}`);
 }); 
