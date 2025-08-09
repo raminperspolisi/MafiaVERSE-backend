@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Test Mafia Game</title>
+</head>
+<body>
+    <h1>🎭 تست بازی مافیا</h1>
+    <p>اگر این پیام را می‌بینید، سرور کار می‌کند!</p>
+    
+    <div id="status">در حال اتصال...</div>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        
+        socket.on('connect', () => {
+            document.getElementById('status').innerHTML = '✅ متصل به سرور شد!';
+            console.log('Connected to server');
+        });
+        
+        socket.on('disconnect', () => {
+            document.getElementById('status').innerHTML = '❌ اتصال قطع شد';
+            console.log('Disconnected from server');
+        });
+    </script>
+</body>
+</html> 
