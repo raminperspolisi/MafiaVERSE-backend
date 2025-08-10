@@ -1,0 +1,216 @@
+/**
+ * Room Manager - مدیریت اتاق‌های بازی در حافظه
+ */
+
+const GameRoom = require('../models/GameRoom');
+
+class RoomManager {
+  constructor() {
+    this.rooms = new Map(); // ذخیره اتاق‌ها در Map
+    this.playerRooms = new Map(); // نگهداری اتاق هر بازیکن
+    this.cleanupInterval = null;
+    
+    // شروع cleanup خودکار
+    this.startCleanup();
+  }
+
+  // ایجاد اتاق جدید
+  createRoom(data) {
+    const room = new GameRoom(data);
+    this.rooms.set(room.id, room);
+    
+    // اگر صاحب اتاق مشخص شده، او را اضافه کن
+    if (data.ownerId) {
+      room.ownerId = data.ownerId;
+    }
+    
+    console.log(`✅ اتاق جدید ایجاد شد: ${room.id}`);
+    return room;
+  }
+
+  // دریافت اتاق با ID
+  getRoom(roomId) {
+    return this.rooms.get(roomId);
+  }
+
+  // دریافت لیست همه اتاق‌ها
+  getAllRooms() {
+    return Array.from(this.rooms.values()).map(room => room.getPublicInfo());
+  }
+
+  // دریافت اتاق‌های عمومی (غیر خصوصی)
+  getPublicRooms() {
+    return Array.from(this.rooms.values())
+      .filter(room => !room.isPrivate && room.status === 'waiting')
+      .map(room => room.getPublicInfo());
+  }
+
+  // پیوستن بازیکن به اتاق
+  joinRoom(roomId, player, password = null) {
+    const room = this.getRoom(roomId);
+    if (!room) {
+      throw new Error('اتاق یافت نشد');
+    }
+
+    // بررسی دسترسی
+    const accessCheck = room.canJoin(player.id, password);
+    if (!accessCheck.canJoin) {
+      throw new Error(accessCheck.reason);
+    }
+
+    // اضافه کردن بازیکن به اتاق
+    const addedPlayer = room.addPlayer(player);
+    
+    // ثبت اتاق بازیکن
+    this.playerRooms.set(player.id, roomId);
+    
+    console.log(`👤 ${player.username} به اتاق ${roomId} پیوست`);
+    return { room, player: addedPlayer };
+  }
+
+  // ترک اتاق توسط بازیکن
+  leaveRoom(roomId, playerId) {
+    const room = this.getRoom(roomId);
+    if (!room) {
+      throw new Error('اتاق یافت نشد');
+    }
+
+    const removedPlayer = room.removePlayer(playerId);
+    if (!removedPlayer) {
+      throw new Error('بازیکن در اتاق یافت نشد');
+    }
+
+    // حذف از ثبت اتاق بازیکن
+    this.playerRooms.delete(playerId);
+
+    // اگر اتاق خالی شد، آن را حذف کن
+    if (room.currentPlayers.length === 0) {
+      this.deleteRoom(roomId);
+      console.log(`🗑️ اتاق ${roomId} حذف شد (خالی)`);
+    } else {
+      console.log(`👋 ${removedPlayer.username} از اتاق ${roomId} خارج شد`);
+    }
+
+    return { room, player: removedPlayer };
+  }
+
+  // تغییر وضعیت آماده بودن بازیکن
+  togglePlayerReady(roomId, playerId) {
+    const room = this.getRoom(roomId);
+    if (!room) {
+      throw new Error('اتاق یافت نشد');
+    }
+
+    const player = room.togglePlayerReady(playerId);
+    if (!player) {
+      throw new Error('بازیکن یافت نشد');
+    }
+
+    console.log(`✅ ${player.username} وضعیت آماده بودن را تغییر داد: ${player.isReady}`);
+    return { room, player };
+  }
+
+  // شروع بازی
+  startGame(roomId) {
+    const room = this.getRoom(roomId);
+    if (!room) {
+      throw new Error('اتاق یافت نشد');
+    }
+
+    const gameData = room.startGame();
+    console.log(`🎮 بازی در اتاق ${roomId} شروع شد`);
+    return { room, gameData };
+  }
+
+  // حذف اتاق
+  deleteRoom(roomId) {
+    const room = this.getRoom(roomId);
+    if (room) {
+      // حذف همه بازیکنان از ثبت
+      room.currentPlayers.forEach(player => {
+        this.playerRooms.delete(player.id);
+      });
+      
+      this.rooms.delete(roomId);
+      console.log(`🗑️ اتاق ${roomId} حذف شد`);
+    }
+  }
+
+  // دریافت اتاق بازیکن
+  getPlayerRoom(playerId) {
+    const roomId = this.playerRooms.get(playerId);
+    return roomId ? this.getRoom(roomId) : null;
+  }
+
+  // بررسی اینکه بازیکن در اتاقی هست یا نه
+  isPlayerInRoom(playerId) {
+    return this.playerRooms.has(playerId);
+  }
+
+  // دریافت تعداد اتاق‌ها
+  getRoomCount() {
+    return this.rooms.size;
+  }
+
+  // دریافت تعداد بازیکنان کل
+  getTotalPlayerCount() {
+    let total = 0;
+    this.rooms.forEach(room => {
+      total += room.currentPlayers.length;
+    });
+    return total;
+  }
+
+  // Cleanup خودکار اتاق‌های قدیمی
+  startCleanup() {
+    this.cleanupInterval = setInterval(() => {
+      this.cleanupOldRooms();
+    }, 5 * 60 * 1000); // هر 5 دقیقه
+  }
+
+  cleanupOldRooms() {
+    const now = new Date();
+    const maxAge = 30 * 60 * 1000; // 30 دقیقه
+
+    for (const [roomId, room] of this.rooms) {
+      const roomAge = now - room.createdAt;
+      
+      // اگر اتاق قدیمی و خالی است، حذف کن
+      if (roomAge > maxAge && room.currentPlayers.length === 0) {
+        this.deleteRoom(roomId);
+        console.log(`🧹 اتاق قدیمی ${roomId} پاک شد`);
+      }
+    }
+  }
+
+  // توقف cleanup
+  stopCleanup() {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+  }
+
+  // دریافت آمار
+  getStats() {
+    return {
+      totalRooms: this.getRoomCount(),
+      totalPlayers: this.getTotalPlayerCount(),
+      publicRooms: this.getPublicRooms().length,
+      waitingRooms: Array.from(this.rooms.values()).filter(r => r.status === 'waiting').length,
+      playingRooms: Array.from(this.rooms.values()).filter(r => r.status === 'playing').length
+    };
+  }
+
+  // پاک کردن همه اتاق‌ها (برای تست)
+  clearAll() {
+    this.rooms.clear();
+    this.playerRooms.clear();
+    console.log('🧹 همه اتاق‌ها پاک شدند');
+  }
+}
+
+// ایجاد instance واحد
+const roomManager = new RoomManager();
+
+module.exports = roomManager; 

@@ -34,553 +34,317 @@ mongoose.connect(MONGODB_URI, {
   console.error('❌ خطا در اتصال به MongoDB:', error);
 });
 
-// Models
+// Import models and utilities
 const User = require('./models/User');
 const Game = require('./models/Game');
+const roomManager = require('./utils/roomManager');
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/game', require('./routes/game'));
+app.use('/api/game-room', require('./routes/gameRoom'));
 
-// Serve main page
+// Serve static files
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'client', 'index.html'));
 });
 
-// Game state management
-let activeGames = new Map();
-let waitingPlayers = [];
+app.get('/game-table', (req, res) => {
+  res.sendFile(path.join(__dirname, 'game-table-room.html'));
+});
+
+app.get('/test-game-room', (req, res) => {
+  res.sendFile(path.join(__dirname, 'test-game-room.html'));
+});
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log(`🔗 کاربر جدید متصل شد: ${socket.id}`);
 
-  // Join waiting room
-  socket.on('join-waiting', (userData) => {
-    const player = {
-      socketId: socket.id,
-      userId: userData.userId,
-      username: userData.username,
-      firstName: userData.firstName,
-      lastName: userData.lastName
-    };
-    
-    waitingPlayers.push(player);
-    socket.join('waiting-room');
-    
-    console.log(`👤 ${userData.username} به اتاق انتظار پیوست`);
-    
-    // Send updated waiting list to all players
-    io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
-    
-    // Auto-start game if we have enough players (minimum 4)
-    if (waitingPlayers.length >= 4) {
-      startNewGame();
-    }
-  });
+  // ذخیره اطلاعات کاربر در socket
+  socket.userData = {
+    socketId: socket.id,
+    userId: null,
+    username: null,
+    currentRoom: null
+  };
 
-  // Start game manually
-  socket.on('start-game', () => {
-    if (waitingPlayers.length >= 4) {
-      startNewGame();
-    } else {
-      socket.emit('error', 'حداقل 4 بازیکن برای شروع بازی نیاز است');
-    }
-  });
+  // پیوستن به اتاق بازی
+  socket.on('join-game-room', async (data) => {
+    try {
+      const { roomId, userId, username, role, password } = data;
 
-  // Game actions
-  socket.on('vote', (data) => {
-    handleVote(socket, data);
-  });
+      // اعتبارسنجی داده‌ها
+      if (!roomId || !userId || !username || !role) {
+        socket.emit('error', 'داده‌های ناقص');
+        return;
+      }
 
-  socket.on('mafia-action', (data) => {
-    handleMafiaAction(socket, data);
-  });
+      // بررسی اینکه کاربر قبلاً در اتاقی هست یا نه
+      if (roomManager.isPlayerInRoom(userId)) {
+        socket.emit('error', 'شما قبلاً در اتاقی هستید');
+        return;
+      }
 
-  socket.on('doctor-action', (data) => {
-    handleDoctorAction(socket, data);
-  });
+      // پیوستن به اتاق
+      const { room, player } = roomManager.joinRoom(roomId, {
+        id: userId,
+        username: username,
+        role: role,
+        socketId: socket.id
+      }, password);
 
-  socket.on('detective-action', (data) => {
-    handleDetectiveAction(socket, data);
-  });
+      // به‌روزرسانی اطلاعات socket
+      socket.userData.userId = userId;
+      socket.userData.username = username;
+      socket.userData.currentRoom = roomId;
 
-  // Chat messages
-  socket.on('send-message', (data) => {
-    const game = findPlayerGame(socket.id);
-    if (game) {
-      io.to(`game-${game.id}`).emit('new-message', {
-        username: data.username,
-        message: data.message,
-        timestamp: new Date(),
-        type: data.type || 'public'
+      // پیوستن به room socket
+      socket.join(roomId);
+
+      // اطلاع‌رسانی به همه اعضای اتاق
+      io.to(roomId).emit('player-joined', {
+        player: player,
+        room: room.getFullInfo()
       });
+
+      // ارسال اطلاعات کامل اتاق به کاربر جدید
+      socket.emit('room-joined', {
+        room: room.getFullInfo(),
+        player: player
+      });
+
+      console.log(`👤 ${username} به اتاق ${roomId} پیوست`);
+
+    } catch (error) {
+      console.error('خطا در پیوستن به اتاق:', error);
+      socket.emit('error', error.message);
     }
   });
 
-  // Disconnect handling
+  // ترک اتاق بازی
+  socket.on('leave-game-room', async (data) => {
+    try {
+      const { roomId, userId } = data;
+
+      if (!roomId || !userId) {
+        socket.emit('error', 'داده‌های ناقص');
+        return;
+      }
+
+      // ترک اتاق
+      const { room, player } = roomManager.leaveRoom(roomId, userId);
+
+      // به‌روزرسانی اطلاعات socket
+      socket.userData.currentRoom = null;
+
+      // خروج از room socket
+      socket.leave(roomId);
+
+      // اطلاع‌رسانی به بقیه اعضای اتاق
+      if (room) {
+        io.to(roomId).emit('player-left', {
+          playerId: userId,
+          room: room.getFullInfo()
+        });
+      }
+
+      // اطلاع‌رسانی به کاربر
+      socket.emit('room-left', {
+        message: 'با موفقیت از اتاق خارج شدید'
+      });
+
+      console.log(`👋 ${socket.userData.username} از اتاق ${roomId} خارج شد`);
+
+    } catch (error) {
+      console.error('خطا در ترک اتاق:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // تغییر وضعیت آماده بودن
+  socket.on('toggle-ready', async (data) => {
+    try {
+      const { roomId, userId } = data;
+
+      if (!roomId || !userId) {
+        socket.emit('error', 'داده‌های ناقص');
+        return;
+      }
+
+      // تغییر وضعیت
+      const { room, player } = roomManager.togglePlayerReady(roomId, userId);
+
+      // اطلاع‌رسانی به همه اعضای اتاق
+      io.to(roomId).emit('player-ready-changed', {
+        player: player,
+        room: room.getFullInfo()
+      });
+
+      console.log(`✅ ${player.username} وضعیت آماده بودن را تغییر داد: ${player.isReady}`);
+
+    } catch (error) {
+      console.error('خطا در تغییر وضعیت آماده بودن:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // شروع بازی
+  socket.on('start-game', async (data) => {
+    try {
+      const { roomId, userId } = data;
+
+      if (!roomId || !userId) {
+        socket.emit('error', 'داده‌های ناقص');
+        return;
+      }
+
+      const room = roomManager.getRoom(roomId);
+      if (!room) {
+        socket.emit('error', 'اتاق یافت نشد');
+        return;
+      }
+
+      // بررسی اینکه کاربر صاحب اتاق است
+      if (room.ownerId !== userId) {
+        socket.emit('error', 'فقط صاحب اتاق می‌تواند بازی را شروع کند');
+        return;
+      }
+
+      // شروع بازی
+      const { room: updatedRoom, gameData } = roomManager.startGame(roomId);
+
+      // اطلاع‌رسانی به همه اعضای اتاق
+      io.to(roomId).emit('game-starting', {
+        room: updatedRoom.getFullInfo(),
+        gameData: gameData,
+        countdown: 5
+      });
+
+      // شروع countdown
+      let countdown = 5;
+      const countdownInterval = setInterval(() => {
+        countdown--;
+        io.to(roomId).emit('game-countdown', { countdown });
+        
+        if (countdown <= 0) {
+          clearInterval(countdownInterval);
+          io.to(roomId).emit('game-started', {
+            room: updatedRoom.getFullInfo(),
+            gameData: gameData
+          });
+        }
+      }, 1000);
+
+      console.log(`🎮 بازی در اتاق ${roomId} شروع شد`);
+
+    } catch (error) {
+      console.error('خطا در شروع بازی:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // درخواست اطلاعات اتاق
+  socket.on('get-room-info', async (data) => {
+    try {
+      const { roomId, userId } = data;
+
+      if (!roomId) {
+        socket.emit('error', 'شناسه اتاق الزامی است');
+        return;
+      }
+
+      const room = roomManager.getRoom(roomId);
+      if (!room) {
+        socket.emit('error', 'اتاق یافت نشد');
+        return;
+      }
+
+      // اگر کاربر در اتاق است، اطلاعات کامل را بده
+      const isMember = room.currentPlayers.find(p => p.id === userId);
+      const roomInfo = isMember ? room.getFullInfo() : room.getPublicInfo();
+
+      socket.emit('room-info', {
+        room: roomInfo,
+        isMember: !!isMember
+      });
+
+    } catch (error) {
+      console.error('خطا در دریافت اطلاعات اتاق:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // درخواست لیست اتاق‌ها
+  socket.on('get-rooms-list', async () => {
+    try {
+      const rooms = roomManager.getPublicRooms();
+      
+      socket.emit('rooms-list', {
+        rooms: rooms,
+        count: rooms.length
+      });
+
+    } catch (error) {
+      console.error('خطا در دریافت لیست اتاق‌ها:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // درخواست آمار
+  socket.on('get-stats', async () => {
+    try {
+      const stats = roomManager.getStats();
+      
+      socket.emit('stats', {
+        stats: stats
+      });
+
+    } catch (error) {
+      console.error('خطا در دریافت آمار:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // قطع اتصال
   socket.on('disconnect', () => {
-    console.log(`❌ کاربر قطع شد: ${socket.id}`);
-    
-    // Remove from waiting players
-    waitingPlayers = waitingPlayers.filter(player => player.socketId !== socket.id);
-    io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
-    
-    // Handle disconnect in active games
-    handlePlayerDisconnect(socket.id);
+    console.log(`🔌 کاربر قطع اتصال کرد: ${socket.id}`);
+
+    // اگر کاربر در اتاقی بود، او را خارج کن
+    if (socket.userData.currentRoom && socket.userData.userId) {
+      try {
+        const { room, player } = roomManager.leaveRoom(
+          socket.userData.currentRoom, 
+          socket.userData.userId
+        );
+
+        if (room) {
+          io.to(socket.userData.currentRoom).emit('player-left', {
+            playerId: socket.userData.userId,
+            room: room.getFullInfo()
+          });
+        }
+
+        console.log(`👋 ${socket.userData.username} به دلیل قطع اتصال از اتاق خارج شد`);
+      } catch (error) {
+        console.error('خطا در خارج کردن کاربر از اتاق:', error);
+      }
+    }
   });
 });
 
-// Game logic functions
-function startNewGame() {
-  if (waitingPlayers.length < 4) return;
-  
-  const gameId = generateGameId();
-  const players = [...waitingPlayers];
-  waitingPlayers = [];
-  
-  // Assign roles
-  const roles = assignRoles(players.length);
-  const gamePlayers = players.map((player, index) => ({
-    ...player,
-    role: roles[index],
-    isAlive: true,
-    votes: 0,
-    isProtected: false
-  }));
-  
-  const game = {
-    id: gameId,
-    players: gamePlayers,
-    phase: 'night', // night, day, voting
-    day: 1,
-    isActive: true,
-    votes: new Map(),
-    nightActions: new Map()
-  };
-  
-  activeGames.set(gameId, game);
-  
-  // Move players to game room
-  players.forEach(player => {
-    const playerSocket = io.sockets.sockets.get(player.socketId);
-    if (playerSocket) {
-      playerSocket.leave('waiting-room');
-      playerSocket.join(`game-${gameId}`);
-    }
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('🛑 در حال خاموش کردن سرور...');
+  roomManager.stopCleanup();
+  server.close(() => {
+    console.log('✅ سرور با موفقیت خاموش شد');
+    process.exit(0);
   });
-  
-  // Send game start notification
-  io.to(`game-${gameId}`).emit('game-started', {
-    gameId,
-    players: gamePlayers.map(p => ({
-      username: p.username,
-      firstName: p.firstName,
-      lastName: p.lastName,
-      isAlive: p.isAlive
-    })),
-    phase: game.phase,
-    day: game.day
-  });
-  
-  // Send roles privately
-  gamePlayers.forEach(player => {
-    const playerSocket = io.sockets.sockets.get(player.socketId);
-    if (playerSocket) {
-      playerSocket.emit('role-assigned', {
-        role: player.role,
-        roleDescription: getRoleDescription(player.role)
-      });
-    }
-  });
-  
-  console.log(`🎮 بازی جدید شروع شد با شناسه: ${gameId}`);
-  
-  // Start night phase
-  startNightPhase(gameId);
-}
-
-function assignRoles(playerCount) {
-  const roles = ['citizen']; // Default role
-  
-  // Calculate role distribution
-  const mafiaCount = Math.floor(playerCount / 3);
-  const specialRoles = ['doctor', 'detective'];
-  
-  // Add mafia members
-  for (let i = 0; i < mafiaCount; i++) {
-    roles.push('mafia');
-  }
-  
-  // Add special roles
-  specialRoles.forEach(role => {
-    if (roles.length < playerCount) {
-      roles.push(role);
-    }
-  });
-  
-  // Fill remaining with citizens
-  while (roles.length < playerCount) {
-    roles.push('citizen');
-  }
-  
-  // Shuffle roles
-  for (let i = roles.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [roles[i], roles[j]] = [roles[j], roles[i]];
-  }
-  
-  return roles;
-}
-
-function getRoleDescription(role) {
-  const descriptions = {
-    'mafia': 'شما عضو مافیا هستید. هدف شما کشتن تمام شهروندان است.',
-    'doctor': 'شما دکتر هستید. می‌توانید هر شب یک نفر را محافظت کنید.',
-    'detective': 'شما کارآگاه هستید. می‌توانید هر شب هویت یک نفر را بررسی کنید.',
-    'citizen': 'شما شهروند معمولی هستید. هدف شما پیدا کردن و حذف مافیا است.'
-  };
-  return descriptions[role] || '';
-}
-
-function startNightPhase(gameId) {
-  const game = activeGames.get(gameId);
-  if (!game) return;
-  
-  game.phase = 'night';
-  game.nightActions.clear();
-  
-  io.to(`game-${gameId}`).emit('phase-changed', {
-    phase: 'night',
-    day: game.day,
-    message: `شب ${game.day} شروع شد. مافیا و نقش‌های ویژه اقدام کنند.`
-  });
-  
-  // Set timer for night phase (30 seconds)
-  setTimeout(() => {
-    processNightActions(gameId);
-  }, 30000);
-}
-
-function startDayPhase(gameId) {
-  const game = activeGames.get(gameId);
-  if (!game) return;
-  
-  game.phase = 'day';
-  
-  io.to(`game-${gameId}`).emit('phase-changed', {
-    phase: 'day',
-    day: game.day,
-    message: `روز ${game.day} شروع شد. بازیکنان در مورد مافیا بحث کنند.`
-  });
-  
-  // Set timer for day phase (60 seconds)
-  setTimeout(() => {
-    startVotingPhase(gameId);
-  }, 60000);
-}
-
-function startVotingPhase(gameId) {
-  const game = activeGames.get(gameId);
-  if (!game) return;
-  
-  game.phase = 'voting';
-  game.votes.clear();
-  
-  const alivePlayers = game.players.filter(p => p.isAlive);
-  
-  io.to(`game-${gameId}`).emit('phase-changed', {
-    phase: 'voting',
-    day: game.day,
-    message: 'زمان رای‌گیری! برای حذف یک بازیکن رای دهید.',
-    players: alivePlayers.map(p => ({
-      username: p.username,
-      firstName: p.firstName,
-      lastName: p.lastName
-    }))
-  });
-  
-  // Set timer for voting phase (45 seconds)
-  setTimeout(() => {
-    processVotes(gameId);
-  }, 45000);
-}
-
-function processNightActions(gameId) {
-  const game = activeGames.get(gameId);
-  if (!game) return;
-  
-  let killedPlayer = null;
-  let protectedPlayer = null;
-  let investigationResult = null;
-  
-  // Process mafia action
-  const mafiaAction = game.nightActions.get('mafia');
-  if (mafiaAction) {
-    killedPlayer = game.players.find(p => p.username === mafiaAction.target);
-  }
-  
-  // Process doctor action
-  const doctorAction = game.nightActions.get('doctor');
-  if (doctorAction) {
-    protectedPlayer = game.players.find(p => p.username === doctorAction.target);
-    if (protectedPlayer) {
-      protectedPlayer.isProtected = true;
-    }
-  }
-  
-  // Process detective action
-  const detectiveAction = game.nightActions.get('detective');
-  if (detectiveAction) {
-    const investigatedPlayer = game.players.find(p => p.username === detectiveAction.target);
-    if (investigatedPlayer) {
-      investigationResult = {
-        player: investigatedPlayer.username,
-        isMafia: investigatedPlayer.role === 'mafia'
-      };
-      
-      // Send result to detective
-      const detective = game.players.find(p => p.role === 'detective');
-      if (detective) {
-        const detectiveSocket = io.sockets.sockets.get(detective.socketId);
-        if (detectiveSocket) {
-          detectiveSocket.emit('investigation-result', investigationResult);
-        }
-      }
-    }
-  }
-  
-  // Apply death if not protected
-  if (killedPlayer && !killedPlayer.isProtected) {
-    killedPlayer.isAlive = false;
-  }
-  
-  // Reset protection
-  game.players.forEach(p => p.isProtected = false);
-  
-  // Check win condition
-  if (checkWinCondition(gameId)) {
-    return;
-  }
-  
-  // Announce results
-  let message = `شب ${game.day} به پایان رسید.`;
-  if (killedPlayer && !killedPlayer.isProtected) {
-    message += ` ${killedPlayer.firstName} ${killedPlayer.lastName} کشته شد.`;
-  } else if (killedPlayer && killedPlayer.isProtected) {
-    message += ' امشب کسی کشته نشد.';
-  }
-  
-  io.to(`game-${gameId}`).emit('night-results', {
-    message,
-    killedPlayer: killedPlayer && !killedPlayer.isProtected ? killedPlayer.username : null,
-    players: game.players.filter(p => p.isAlive).map(p => ({
-      username: p.username,
-      firstName: p.firstName,
-      lastName: p.lastName,
-      isAlive: p.isAlive
-    }))
-  });
-  
-  // Start day phase
-  setTimeout(() => {
-    startDayPhase(gameId);
-  }, 3000);
-}
-
-function processVotes(gameId) {
-  const game = activeGames.get(gameId);
-  if (!game) return;
-  
-  // Count votes
-  const voteCount = new Map();
-  game.votes.forEach(vote => {
-    voteCount.set(vote.target, (voteCount.get(vote.target) || 0) + 1);
-  });
-  
-  // Find player with most votes
-  let maxVotes = 0;
-  let eliminatedPlayer = null;
-  
-  voteCount.forEach((votes, playerUsername) => {
-    if (votes > maxVotes) {
-      maxVotes = votes;
-      eliminatedPlayer = game.players.find(p => p.username === playerUsername);
-    }
-  });
-  
-  if (eliminatedPlayer && maxVotes > 0) {
-    eliminatedPlayer.isAlive = false;
-    
-    io.to(`game-${gameId}`).emit('player-eliminated', {
-      player: eliminatedPlayer.username,
-      firstName: eliminatedPlayer.firstName,
-      lastName: eliminatedPlayer.lastName,
-      role: eliminatedPlayer.role,
-      votes: maxVotes
-    });
-  } else {
-    io.to(`game-${gameId}`).emit('no-elimination', {
-      message: 'هیچ‌کس حذف نشد.'
-    });
-  }
-  
-  // Check win condition
-  if (checkWinCondition(gameId)) {
-    return;
-  }
-  
-  // Move to next day
-  game.day++;
-  setTimeout(() => {
-    startNightPhase(gameId);
-  }, 5000);
-}
-
-function checkWinCondition(gameId) {
-  const game = activeGames.get(gameId);
-  if (!game) return false;
-  
-  const alivePlayers = game.players.filter(p => p.isAlive);
-  const aliveMafia = alivePlayers.filter(p => p.role === 'mafia');
-  const aliveCitizens = alivePlayers.filter(p => p.role !== 'mafia');
-  
-  let winner = null;
-  
-  if (aliveMafia.length === 0) {
-    winner = 'citizens';
-  } else if (aliveMafia.length >= aliveCitizens.length) {
-    winner = 'mafia';
-  }
-  
-  if (winner) {
-    game.isActive = false;
-    
-    io.to(`game-${gameId}`).emit('game-ended', {
-      winner,
-      message: winner === 'citizens' ? 'شهروندان برنده شدند!' : 'مافیا برنده شد!',
-      players: game.players.map(p => ({
-        username: p.username,
-        firstName: p.firstName,
-        lastName: p.lastName,
-        role: p.role,
-        isAlive: p.isAlive
-      }))
-    });
-    
-    // Clean up
-    setTimeout(() => {
-      activeGames.delete(gameId);
-    }, 30000);
-    
-    return true;
-  }
-  
-  return false;
-}
-
-// Helper functions
-function findPlayerGame(socketId) {
-  for (let [gameId, game] of activeGames) {
-    if (game.players.some(p => p.socketId === socketId)) {
-      return game;
-    }
-  }
-  return null;
-}
-
-function handlePlayerDisconnect(socketId) {
-  for (let [gameId, game] of activeGames) {
-    const playerIndex = game.players.findIndex(p => p.socketId === socketId);
-    if (playerIndex !== -1) {
-      game.players[playerIndex].isAlive = false;
-      io.to(`game-${gameId}`).emit('player-disconnected', {
-        username: game.players[playerIndex].username,
-        message: `${game.players[playerIndex].firstName} بازی را ترک کرد.`
-      });
-      
-      checkWinCondition(gameId);
-      break;
-    }
-  }
-}
-
-function handleVote(socket, data) {
-  const game = findPlayerGame(socket.id);
-  if (!game || game.phase !== 'voting') return;
-  
-  const voter = game.players.find(p => p.socketId === socket.id);
-  if (!voter || !voter.isAlive) return;
-  
-  game.votes.set(voter.username, {
-    voter: voter.username,
-    target: data.target
-  });
-  
-  io.to(`game-${game.id}`).emit('vote-cast', {
-    voter: voter.username,
-    message: `${voter.firstName} رای خود را ثبت کرد.`
-  });
-}
-
-function handleMafiaAction(socket, data) {
-  const game = findPlayerGame(socket.id);
-  if (!game || game.phase !== 'night') return;
-  
-  const player = game.players.find(p => p.socketId === socket.id);
-  if (!player || player.role !== 'mafia' || !player.isAlive) return;
-  
-  game.nightActions.set('mafia', {
-    actor: player.username,
-    target: data.target
-  });
-  
-  socket.emit('action-confirmed', {
-    message: `هدف شما برای امشب: ${data.target}`
-  });
-}
-
-function handleDoctorAction(socket, data) {
-  const game = findPlayerGame(socket.id);
-  if (!game || game.phase !== 'night') return;
-  
-  const player = game.players.find(p => p.socketId === socket.id);
-  if (!player || player.role !== 'doctor' || !player.isAlive) return;
-  
-  game.nightActions.set('doctor', {
-    actor: player.username,
-    target: data.target
-  });
-  
-  socket.emit('action-confirmed', {
-    message: `${data.target} را محافظت کردید.`
-  });
-}
-
-function handleDetectiveAction(socket, data) {
-  const game = findPlayerGame(socket.id);
-  if (!game || game.phase !== 'night') return;
-  
-  const player = game.players.find(p => p.socketId === socket.id);
-  if (!player || player.role !== 'detective' || !player.isAlive) return;
-  
-  game.nightActions.set('detective', {
-    actor: player.username,
-    target: data.target
-  });
-  
-  socket.emit('action-confirmed', {
-    message: `${data.target} را بررسی کردید.`
-  });
-}
-
-function generateGameId() {
-  return Math.random().toString(36).substr(2, 9);
-}
+});
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 سرور روی پورت ${PORT} راه‌اندازی شد`);
-  console.log(`🌐 قابل دسترسی از: http://localhost:${PORT}`);
-  console.log(`📱 برای موبایل: http://YOUR_IP_ADDRESS:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`🚀 سرور روی پورت ${PORT} اجرا می‌شود`);
+  console.log(`📊 آمار اولیه: ${JSON.stringify(roomManager.getStats())}`);
 }); 
