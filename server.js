@@ -63,7 +63,7 @@ io.on('connection', (socket) => {
 
   // ذخیره اطلاعات کاربر در socket
   socket.userData = {
-    socketId: socket.id,
+      socketId: socket.id,
     userId: null,
     username: null,
     currentRoom: null
@@ -208,9 +208,9 @@ io.on('connection', (socket) => {
       // بررسی اینکه کاربر صاحب اتاق است
       if (room.ownerId !== userId) {
         socket.emit('error', 'فقط صاحب اتاق می‌تواند بازی را شروع کند');
-        return;
-      }
-
+    return;
+  }
+  
       // شروع بازی
       const { room: updatedRoom, gameData } = roomManager.startGame(roomId);
 
@@ -257,9 +257,9 @@ io.on('connection', (socket) => {
       const room = roomManager.getRoom(roomId);
       if (!room) {
         socket.emit('error', 'اتاق یافت نشد');
-        return;
-      }
-
+    return;
+  }
+  
       // اگر کاربر در اتاق است، اطلاعات کامل را بده
       const isMember = room.currentPlayers.find(p => p.id === userId);
       const roomInfo = isMember ? room.getFullInfo() : room.getPublicInfo();
@@ -343,7 +343,7 @@ process.on('SIGINT', () => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`🚀 سرور روی پورت ${PORT} اجرا می‌شود`);
   console.log(`📊 آمار اولیه: ${JSON.stringify(roomManager.getStats())}`);
