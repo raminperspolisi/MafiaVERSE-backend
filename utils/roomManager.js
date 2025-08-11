@@ -68,6 +68,71 @@ class RoomManager {
     return { room, player: addedPlayer };
   }
 
+  // Challenge APIs
+  requestChallenge(roomId, challengerId) {
+    const room = this.getRoom(roomId);
+    if (!room) throw new Error('اتاق یافت نشد');
+    const player = room.currentPlayers.find(p => p.id === challengerId);
+    if (!player) throw new Error('بازیکن یافت نشد');
+    const requests = room.addChallengeRequest(player);
+    return { room, requests };
+  }
+
+  approveChallenge(roomId, approverId, targetUserId) {
+    const room = this.getRoom(roomId);
+    if (!room) throw new Error('اتاق یافت نشد');
+    const requests = room.approveChallenge(targetUserId, approverId);
+    return { room, requests };
+  }
+
+  startApprovedChallenge(roomId) {
+    const room = this.getRoom(roomId);
+    if (!room) throw new Error('اتاق یافت نشد');
+    const targetUserId = room.startChallengeIfApproved();
+    return { room, targetUserId };
+  }
+
+  endChallengeAndProceed(roomId) {
+    const room = this.getRoom(roomId);
+    if (!room) throw new Error('اتاق یافت نشد');
+    const nextSpeakerId = room.endActiveChallenge();
+    return { room, nextSpeakerId };
+  }
+
+  endSpeakerAndMaybeStartChallenge(roomId, speakerId) {
+    const room = this.getRoom(roomId);
+    if (!room) throw new Error('اتاق یافت نشد');
+    if (room.currentSpeakerId !== speakerId) {
+      throw new Error('نوبت این بازیکن نیست');
+    }
+    // If challenge approved, start it, else move to next speaker
+    const targetUserId = room.startChallengeIfApproved();
+    if (targetUserId) {
+      // Do not rotate queue now; challenge will run and then proceed
+      return { room, startedChallengeFor: targetUserId };
+    }
+    const nextSpeakerId = room.moveToNextSpeaker();
+    return { room, nextSpeakerId };
+  }
+
+  // Speaking helpers
+  forceNextSpeaker(roomId) {
+    const room = this.getRoom(roomId);
+    if (!room) throw new Error('اتاق یافت نشد');
+    const nextSpeakerId = room.moveToNextSpeaker();
+    return { room, nextSpeakerId };
+  }
+
+  getSpeakingState(roomId) {
+    const room = this.getRoom(roomId);
+    if (!room) throw new Error('اتاق یافت نشد');
+    return {
+      currentSpeakerId: room.currentSpeakerId,
+      speakingQueue: room.speakingQueue,
+      challenge: room.getChallengeState()
+    };
+  }
+
   // ترک اتاق توسط بازیکن
   leaveRoom(roomId, playerId) {
     const room = this.getRoom(roomId);

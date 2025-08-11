@@ -222,6 +222,106 @@ mafia-web-app/
 }
 ```
 
+### Challenge Endpoints
+
+#### `POST /api/game-room/challenge/request/:roomId`
+ثبت درخواست چالش توسط بازیکنی که گوینده نیست
+```javascript
+// Request Body
+{
+  "userId": "user_2"
+}
+
+// Response
+{
+  "success": true,
+  "message": "درخواست چالش ثبت شد",
+  "challenge": {
+    "currentSpeakerId": "user_1",
+    "requests": [
+      { "userId": "user_2", "username": "zahra", "avatar": "", "timestamp": 1700000000, "approved": false }
+    ],
+    "approvedUserId": null,
+    "active": false
+  },
+  "room": { /* full room info */ }
+}
+```
+
+#### `POST /api/game-room/challenge/approve/:roomId`
+تایید یکی از درخواست‌های چالش توسط گوینده فعلی
+```javascript
+// Request Body
+{
+  "approverUserId": "user_1",   // باید برابر با currentSpeakerId باشد
+  "targetUserId": "user_2"
+}
+
+// Response
+{
+  "success": true,
+  "message": "چالش تایید شد",
+  "challenge": {
+    "currentSpeakerId": "user_1",
+    "requests": [
+      { "userId": "user_2", "approved": true }
+    ],
+    "approvedUserId": "user_2",
+    "active": false
+  },
+  "room": { /* full room info */ }
+}
+```
+
+#### `POST /api/game-room/speech/end/:roomId`
+پایان صحبت گوینده و در صورت وجود تایید، شروع چالش 40 ثانیه‌ای برای فرد تایید شده
+```javascript
+// Request Body
+{
+  "speakerUserId": "user_1"
+}
+
+// Response
+{
+  "success": true,
+  "result": {
+    // اگر چالش تایید شده باشد
+    "startedChallengeFor": "user_2"
+    // در غیر اینصورت
+    // "nextSpeakerId": "user_3"
+  },
+  "challenge": {
+    "currentSpeakerId": "user_1",
+    "approvedUserId": "user_2",
+    "active": true
+  },
+  "speaking": {
+    "currentSpeakerId": "user_1",
+    "speakingQueue": [ "user_1", "user_2", "user_3" ]
+  },
+  "room": { /* full room info */ }
+}
+```
+
+#### `GET /api/game-room/speaking/:roomId`
+دریافت وضعیت نوبت صحبت و چالش
+```javascript
+// Response
+{
+  "success": true,
+  "speaking": {
+    "currentSpeakerId": "user_1",
+    "speakingQueue": ["user_1","user_2","user_3"],
+    "challenge": {
+      "currentSpeakerId": "user_1",
+      "approvedUserId": null,
+      "requests": [],
+      "active": false
+    }
+  }
+}
+```
+
 ## 🔌 **Socket.IO Events**
 
 ### Client to Server Events
@@ -285,6 +385,24 @@ socket.emit('get-rooms-list');
 ```javascript
 socket.emit('get-stats');
 ```
+
+#### Waiting Lobby (Matchmaking)
+- `start-matchmaking` پیوستن به صف انتظار شروع بازی
+```javascript
+socket.emit('start-matchmaking', {
+  userId: 'u1',
+  username: 'user1',
+  firstName: 'نام',
+  lastName: 'نام‌خانوادگی'
+});
+```
+
+- `leave-waiting` خروج از صف انتظار
+```javascript
+socket.emit('leave-waiting');
+```
+
+- سازگاری قدیمی: `join-waiting` (ترجیحاً استفاده نشود)
 
 ### Server to Client Events
 
@@ -391,6 +509,25 @@ socket.on('error', (message) => {
   console.error('خطا:', message);
 });
 ```
+
+#### Waiting Lobby Events
+- `waiting-players-updated` بروزرسانی شمارنده و لیست منتظران
+```javascript
+socket.on('waiting-players-updated', ({ count, players }) => {
+  // count: عدد افراد منتظر (هدف: 10)
+});
+```
+
+- وقتی تعداد به 10 رسید:
+  - `game-started` برای اتاق بازی جدید (عمومی)
+  - `role-assigned` فقط برای هر بازیکن به صورت خصوصی
+
+#### Challenge Events
+- `challenge-requests-updated` بروزرسانی لیست درخواست‌های چالش و وضعیت تایید
+- `challenge-started` شروع چالش 40 ثانیه‌ای برای فرد تایید شده
+- `challenge-tick` ثانیه‌شمار چالش
+- `challenge-ended` پایان چالش
+- `speaking-updated` بروزرسانی گوینده فعلی و صف صحبت
 
 ## 🧠 **Memory Management**
 

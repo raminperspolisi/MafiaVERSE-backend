@@ -15,6 +15,78 @@ const io = socketIo(server, {
   }
 });
 
+// Waiting lobby (matchmaking)
+let waitingPlayers = [];
+
+function assignRoles(playerCount) {
+  const roles = [];
+  const mafiaCount = Math.floor(playerCount / 3); // about one-third mafia
+  for (let i = 0; i < mafiaCount; i++) roles.push('mafia');
+  // Add special roles if space remains
+  if (roles.length < playerCount) roles.push('doctor');
+  if (roles.length < playerCount) roles.push('detective');
+  while (roles.length < playerCount) roles.push('citizen');
+  // Shuffle
+  for (let i = roles.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [roles[i], roles[j]] = [roles[j], roles[i]];
+  }
+  return roles;
+}
+
+function startWaitingGame(ioInstance) {
+  if (waitingPlayers.length < 10) return;
+  const gameId = Math.random().toString(36).substr(2, 9);
+  const players = waitingPlayers.slice(0, 10);
+  waitingPlayers = waitingPlayers.slice(10);
+
+  const roles = assignRoles(players.length);
+  const gamePlayers = players.map((player, index) => ({
+    ...player,
+    role: roles[index],
+    isAlive: true
+  }));
+
+  // Move players sockets to game room and notify
+  gamePlayers.forEach(player => {
+    const playerSocket = ioInstance.sockets.sockets.get(player.socketId);
+    if (playerSocket) {
+      playerSocket.leave('waiting-room');
+      playerSocket.join(`game-${gameId}`);
+    }
+  });
+
+  // Public game started event (no roles)
+  ioInstance.to(`game-${gameId}`).emit('game-started', {
+    gameId,
+    players: gamePlayers.map(p => ({
+      userId: p.userId,
+      username: p.username,
+      firstName: p.firstName,
+      lastName: p.lastName,
+      isAlive: p.isAlive
+    })),
+    phase: 'night',
+    day: 1
+  });
+
+  // Private role assignment
+  gamePlayers.forEach(player => {
+    const playerSocket = ioInstance.sockets.sockets.get(player.socketId);
+    if (playerSocket) {
+      playerSocket.emit('role-assigned', {
+        role: player.role
+      });
+    }
+  });
+
+  // Update remaining waiting lobby
+  ioInstance.to('waiting-room').emit('waiting-players-updated', {
+    count: waitingPlayers.length,
+    players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
+  });
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -38,6 +110,9 @@ mongoose.connect(MONGODB_URI, {
 const User = require('./models/User');
 const Game = require('./models/Game');
 const roomManager = require('./utils/roomManager');
+
+// Keep timers per room for challenge countdowns
+const roomTimers = new Map();
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -306,6 +381,184 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Request a challenge (by non-speaking players) -> shows avatar badge next to requesting player
+  socket.on('request-challenge', async (data) => {
+    try {
+      const { roomId, userId } = data;
+      if (!roomId || !userId) return socket.emit('error', 'داده‌های ناقص');
+      const { room, requests } = roomManager.requestChallenge(roomId, userId);
+      io.to(roomId).emit('challenge-requests-updated', {
+        roomId,
+        challenge: room.getChallengeState()
+      });
+    } catch (error) {
+      console.error('خطا در ثبت درخواست چالش:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // Speaker approves one challenge request; approved user turns green on UI
+  socket.on('approve-challenge', async (data) => {
+    try {
+      const { roomId, approverUserId, targetUserId } = data;
+      if (!roomId || !approverUserId || !targetUserId) return socket.emit('error', 'داده‌های ناقص');
+      const { room } = roomManager.approveChallenge(roomId, approverUserId, targetUserId);
+      io.to(roomId).emit('challenge-requests-updated', {
+        roomId,
+        challenge: room.getChallengeState()
+      });
+    } catch (error) {
+      console.error('خطا در تایید چالش:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // Speaker ends their talk; if a challenge is approved, start 40s challenge for the approved user
+  socket.on('end-speech', async (data) => {
+    try {
+      const { roomId, speakerUserId } = data;
+      if (!roomId || !speakerUserId) return socket.emit('error', 'داده‌های ناقص');
+
+      // Try to start approved challenge, otherwise go to next speaker
+      const result = roomManager.endSpeakerAndMaybeStartChallenge(roomId, speakerUserId);
+      const room = roomManager.getRoom(roomId);
+
+      if (result.startedChallengeFor) {
+        const challengeUserId = result.startedChallengeFor;
+        const CHALLENGE_SECONDS = 40;
+        let secondsLeft = CHALLENGE_SECONDS;
+        io.to(roomId).emit('challenge-started', {
+          roomId,
+          userId: challengeUserId,
+          duration: CHALLENGE_SECONDS
+        });
+
+        // Clear previous timer if exists
+        const prev = roomTimers.get(roomId);
+        if (prev) clearInterval(prev);
+
+        const interval = setInterval(() => {
+          secondsLeft -= 1;
+          io.to(roomId).emit('challenge-tick', { roomId, userId: challengeUserId, secondsLeft });
+          if (secondsLeft <= 0) {
+            clearInterval(interval);
+            roomTimers.delete(roomId);
+            const { nextSpeakerId } = roomManager.endChallengeAndProceed(roomId);
+            io.to(roomId).emit('challenge-ended', {
+              roomId,
+              userId: challengeUserId
+            });
+            io.to(roomId).emit('speaking-updated', {
+              roomId,
+              currentSpeakerId: nextSpeakerId,
+              speakingQueue: room.speakingQueue,
+              challenge: room.getChallengeState()
+            });
+          }
+        }, 1000);
+        roomTimers.set(roomId, interval);
+
+      } else {
+        // No challenge; speaker moved to next
+        io.to(roomId).emit('speaking-updated', {
+          roomId,
+          currentSpeakerId: result.nextSpeakerId,
+          speakingQueue: room.speakingQueue,
+          challenge: room.getChallengeState()
+        });
+      }
+
+    } catch (error) {
+      console.error('خطا در پایان صحبت:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // Optional: allow force next speaker (e.g., host/admin control)
+  socket.on('force-next-speaker', async (data) => {
+    try {
+      const { roomId } = data;
+      if (!roomId) return socket.emit('error', 'شناسه اتاق الزامی است');
+      const { room, nextSpeakerId } = roomManager.forceNextSpeaker(roomId);
+      io.to(roomId).emit('speaking-updated', {
+        roomId,
+        currentSpeakerId: nextSpeakerId,
+        speakingQueue: room.speakingQueue,
+        challenge: room.getChallengeState()
+      });
+    } catch (error) {
+      console.error('خطا در تغییر گوینده:', error);
+      socket.emit('error', error.message);
+    }
+  });
+
+  // Join waiting lobby (matchmaking)
+  socket.on('start-matchmaking', (userData) => {
+    const player = {
+      socketId: socket.id,
+      userId: userData.userId,
+      username: userData.username,
+      firstName: userData.firstName,
+      lastName: userData.lastName
+    };
+
+    // Prevent duplicates
+    if (!waitingPlayers.find(p => p.userId === player.userId)) {
+      waitingPlayers.push(player);
+    }
+    socket.join('waiting-room');
+
+    io.to('waiting-room').emit('waiting-players-updated', {
+      count: waitingPlayers.length,
+      players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
+    });
+
+    // Auto-start when we have 10 or more
+    if (waitingPlayers.length >= 10) {
+      startWaitingGame(io);
+    }
+  });
+
+  // Backward-compatible alias
+  socket.on('join-waiting', (userData) => {
+    socket.emit('deprecated', { message: 'Use start-matchmaking instead' });
+    socket.emit('info', { message: 'Joining waiting lobby...' });
+    socket.emit('start-matchmaking-proxy-ack');
+    // Reuse behavior
+    socket.emit('start-matchmaking', userData);
+    // But emit locally for this socket handler
+    const player = {
+      socketId: socket.id,
+      userId: userData.userId,
+      username: userData.username,
+      firstName: userData.firstName,
+      lastName: userData.lastName
+    };
+    if (!waitingPlayers.find(p => p.userId === player.userId)) {
+      waitingPlayers.push(player);
+    }
+    socket.join('waiting-room');
+    io.to('waiting-room').emit('waiting-players-updated', {
+      count: waitingPlayers.length,
+      players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
+    });
+    if (waitingPlayers.length >= 10) {
+      startWaitingGame(io);
+    }
+  });
+
+  socket.on('leave-waiting', () => {
+    const before = waitingPlayers.length;
+    waitingPlayers = waitingPlayers.filter(p => p.socketId !== socket.id);
+    socket.leave('waiting-room');
+    if (before !== waitingPlayers.length) {
+      io.to('waiting-room').emit('waiting-players-updated', {
+        count: waitingPlayers.length,
+        players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
+      });
+    }
+  });
+
   // قطع اتصال
   socket.on('disconnect', () => {
     console.log(`🔌 کاربر قطع اتصال کرد: ${socket.id}`);
@@ -329,6 +582,15 @@ io.on('connection', (socket) => {
       } catch (error) {
         console.error('خطا در خارج کردن کاربر از اتاق:', error);
       }
+    }
+    // Remove from waiting lobby if present
+    const before = waitingPlayers.length;
+    waitingPlayers = waitingPlayers.filter(p => p.socketId !== socket.id);
+    if (before !== waitingPlayers.length) {
+      io.to('waiting-room').emit('waiting-players-updated', {
+        count: waitingPlayers.length,
+        players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
+      });
     }
   });
 });

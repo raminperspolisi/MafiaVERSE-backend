@@ -222,6 +222,87 @@ router.post('/start/:roomId', authenticateUser, (req, res) => {
   }
 });
 
+// POST /api/game-room/challenge/request/:roomId - ثبت درخواست چالش
+router.post('/challenge/request/:roomId', authenticateUser, (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'شناسه کاربر الزامی است' });
+    }
+    const { room, requests } = roomManager.requestChallenge(roomId, userId);
+    res.json({
+      success: true,
+      message: 'درخواست چالش ثبت شد',
+      challenge: room.getChallengeState(),
+      room: room.getFullInfo()
+    });
+  } catch (error) {
+    console.error('خطا در ثبت درخواست چالش:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/game-room/challenge/approve/:roomId - تایید چالش توسط گوینده
+router.post('/challenge/approve/:roomId', authenticateUser, (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { approverUserId, targetUserId } = req.body;
+    if (!approverUserId || !targetUserId) {
+      return res.status(400).json({ success: false, message: 'داده‌های ناقص' });
+    }
+    const { room } = roomManager.approveChallenge(roomId, approverUserId, targetUserId);
+    res.json({
+      success: true,
+      message: 'چالش تایید شد',
+      challenge: room.getChallengeState(),
+      room: room.getFullInfo()
+    });
+  } catch (error) {
+    console.error('خطا در تایید چالش:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/game-room/speech/end/:roomId - پایان صحبت گوینده و شروع چالش (در صورت تایید)
+router.post('/speech/end/:roomId', authenticateUser, (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { speakerUserId } = req.body;
+    if (!speakerUserId) {
+      return res.status(400).json({ success: false, message: 'شناسه گوینده الزامی است' });
+    }
+    const result = roomManager.endSpeakerAndMaybeStartChallenge(roomId, speakerUserId);
+    const room = roomManager.getRoom(roomId);
+
+    res.json({
+      success: true,
+      result,
+      challenge: room.getChallengeState(),
+      speaking: {
+        currentSpeakerId: room.currentSpeakerId,
+        speakingQueue: room.speakingQueue
+      },
+      room: room.getFullInfo()
+    });
+  } catch (error) {
+    console.error('خطا در پایان صحبت:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/game-room/speaking/:roomId - وضعیت نوبت صحبت و چالش
+router.get('/speaking/:roomId', (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const state = roomManager.getSpeakingState(roomId);
+    res.json({ success: true, speaking: state });
+  } catch (error) {
+    console.error('خطا در دریافت وضعیت صحبت:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // GET /api/game-room/list - دریافت لیست اتاق‌های عمومی
 router.get('/list', (req, res) => {
   try {
