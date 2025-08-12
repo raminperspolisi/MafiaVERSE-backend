@@ -686,6 +686,27 @@ curl -X POST http://localhost:3000/api/waiting/spawn-bots -H "Content-Type: appl
 }
 ```
 
+### `POST /api/waiting/add-one-bot`
+افزودن یک ربات تستی در هر درخواست (برای کنترل بهتر تعداد).
+
+```bash
+curl -X POST http://localhost:3000/api/waiting/add-one-bot
+```
+
+- Response نمونه:
+```json
+{
+  "success": true,
+  "count": 3,
+  "addedBot": {
+    "userId": "bot_1_abc12",
+    "username": "ربات_1",
+    "firstName": "ربات",
+    "lastName": "1"
+  }
+}
+```
+
 ### `POST /api/waiting/clear-bots`
 حذف همه ربات‌ها از صف انتظار.
 
@@ -701,6 +722,146 @@ curl -X POST http://localhost:3000/api/waiting/clear-bots
 }
 ```
 
+### `GET /api/waiting/lobby`
+مشاهده لابی ذخیره‌شده در دیتابیس (شامل همه کاربران منتظر).
+
+```bash
+curl -s http://localhost:3000/api/waiting/lobby
+```
+
+- Response نمونه:
+```json
+{
+  "success": true,
+  "lobby": {
+    "lobbyId": "default",
+    "players": [
+      {
+        "userId": "u1",
+        "username": "user1",
+        "firstName": "نام",
+        "lastName": "نام‌خانوادگی",
+        "isBot": false,
+        "socketId": null
+      },
+      {
+        "userId": "bot_1_abc12",
+        "username": "ربات_1",
+        "firstName": "ربات",
+        "lastName": "1",
+        "isBot": true,
+        "socketId": null
+      }
+    ],
+    "updatedAt": "2024-01-01T10:00:00.000Z"
+  }
+}
+```
+
+### `POST /api/waiting/lobby/save`
+ذخیره دستی لیست کاربران در لابی (برای تست با کاربران دلخواه).
+
+```bash
+curl -X POST http://localhost:3000/api/waiting/lobby/save -H "Content-Type: application/json" -d "{\"players\":[{\"userId\":\"u1\",\"username\":\"user1\"},{\"userId\":\"u2\",\"username\":\"user2\"},{\"userId\":\"u3\",\"username\":\"user3\"},{\"userId\":\"u4\",\"username\":\"user4\"},{\"userId\":\"u5\",\"username\":\"user5\"},{\"userId\":\"u6\",\"username\":\"user6\"},{\"userId\":\"u7\",\"username\":\"user7\"},{\"userId\":\"u8\",\"username\":\"user8\"},{\"userId\":\"u9\",\"username\":\"user9\"},{\"userId\":\"u10\",\"username\":\"user10\"}]}"
+```
+
+- Body:
+```json
+{
+  "players": [
+    {
+      "userId": "u1",
+      "username": "user1",
+      "firstName": "نام",
+      "lastName": "نام‌خانوادگی"
+    },
+    {
+      "userId": "u2", 
+      "username": "user2",
+      "firstName": "نام",
+      "lastName": "نام‌خانوادگی"
+    }
+  ]
+}
+```
+
+- Response نمونه:
+```json
+{
+  "success": true,
+  "count": 2
+}
+```
+
+## 💾 **Data Persistence (TestLobby)**
+
+### TestLobby Model
+مدل MongoDB برای ذخیره‌سازی لابی انتظار تستی:
+
+```javascript
+const testLobbySchema = new mongoose.Schema({
+  lobbyId: { type: String, default: 'default', unique: true, index: true },
+  players: [{
+    userId: { type: String, required: true },
+    username: { type: String, required: true },
+    firstName: { type: String, default: '' },
+    lastName: { type: String, default: '' },
+    isBot: { type: Boolean, default: false },
+    socketId: { type: String, default: null }
+  }],
+  updatedAt: { type: Date, default: Date.now }
+});
+```
+
+### Persistence Features
+- **Auto-save**: هر بار که `broadcastWaiting` فراخوانی می‌شود، لابی در MongoDB ذخیره می‌شود
+- **Auto-restore**: هنگام استارت سرور، لابی از MongoDB بازیابی می‌شود
+- **Bot Detection**: ربات‌ها با `userId` شروع شونده با `bot_` شناسایی می‌شوند
+- **Offline Players**: کاربران بازیابی شده با `socketId: null` علامت‌گذاری می‌شوند
+
+### Usage Flow
+1. **Startup**: `restoreLobby()` لابی را از دیتابیس بازیابی می‌کند
+2. **Player Join**: کاربر به `waitingPlayers` اضافه می‌شود
+3. **Broadcast**: `broadcastWaiting()` به همه کلاینت‌ها اطلاع می‌دهد
+4. **Persist**: `persistLobby()` لابی را در MongoDB ذخیره می‌کند
+5. **Auto-start**: اگر تعداد به 10 رسید، `startWaitingGame()` فراخوانی می‌شود
+
+### Error Handling
+- در صورت عدم دسترسی به MongoDB، لابی فقط در حافظه نگهداری می‌شود
+- خطاهای ذخیره‌سازی در console ثبت می‌شوند اما عملکرد سرور متوقف نمی‌شود
+- کاربران بازیابی شده می‌توانند مجدداً به لابی بپیوندند
+
 ---
 
 **این مستندات تمامی قابلیت‌های backend اتاق بازی را پوشش می‌دهد. برای سوالات بیشتر یا درخواست ویژگی‌های جدید، لطفاً با تیم توسعه تماس بگیرید.** 
+
+## 🔌 **Endpoint های جدید:**
+
+### 1️⃣ **`POST /api/waiting/add-one-bot`**
+- **هدف**: اضافه کردن یک ربات در هر درخواست
+- **استفاده**: `curl -X POST http://localhost:3000/api/waiting/add-one-bot`
+- **مزیت**: کنترل دقیق تعداد ربات‌ها
+
+### 2️⃣ **`POST /api/waiting/spawn-bots`** 
+- **هدف**: اضافه کردن چندین ربات یکجا
+- **استفاده**: `curl -X POST http://localhost:3000/api/waiting/spawn-bots -H "Content-Type: application/json" -d "{\"count\":5}"`
+
+### 3️⃣ **`POST /api/waiting/clear-bots`**
+- **هدف**: پاک‌سازی همه ربات‌ها
+- **استفاده**: `curl -X POST http://localhost:3000/api/waiting/clear-bots`
+
+### 4️⃣ **`GET /api/waiting/lobby`**
+- **هدف**: مشاهده لابی ذخیره‌شده
+- **استفاده**: `curl -s http://localhost:3000/api/waiting/lobby`
+
+### 5️⃣ **`POST /api/waiting/lobby/save`**
+- **هدف**: ذخیره دستی لابی
+- **استفاده**: با JSON body شامل لیست players
+
+## 🎯 **نحوه استفاده:**
+
+```bash
+<code_block_to_apply_changes_from>
+```
+
+حالا هم از طریق UI (دکمه +1) و هم از طریق API می‌توانید ربات‌ها را کنترل کنید!

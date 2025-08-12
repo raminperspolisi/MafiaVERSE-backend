@@ -178,7 +178,7 @@
                     <span>تعداد منتظران: <span class="waiting-count" id="waitingCount">0</span>/10</span>
                     <div>
                         <button onclick="startMatchmaking()">شروع بازی</button>
-                        <button onclick="startTestMode()">حالت تست</button>
+                        <button onclick="addOneTestUser()">اضافه کردن کاربر تست (+1)</button>
                     </div>
                 </div>
                 <div id="waitingPlayers"></div>
@@ -316,12 +316,32 @@
             socket.emit('start-matchmaking', currentUser);
         }
 
-        function startTestMode() {
-            // Prevent duplicate test
+        function addOneTestUser() {
             if (testBots.length > 0) return;
-            // Ensure current tab joins
-            startMatchmaking();
-            // Spawn 9 bot clients
+            
+            // Add one bot user
+            const bot = io();
+            const botUser = {
+                userId: `bot_${Math.random().toString(36).substr(2, 5)}`,
+                username: `ربات_${testBots.length + 1}`,
+                firstName: 'ربات',
+                lastName: String(testBots.length + 1)
+            };
+            
+            bot.on('connect', () => {
+                bot.emit('start-matchmaking', botUser);
+            });
+            
+            bot.on('disconnect', () => {});
+            bot.on('error', () => {});
+            testBots.push(bot);
+        }
+
+        function startTestMode() {
+            if (testBots.length > 0) return;
+            startMatchmaking(); // Current tab joins
+            
+            // Add 9 bots to reach 10 total
             for (let i = 1; i <= 9; i++) {
                 const bot = io();
                 const botUser = {
@@ -333,7 +353,6 @@
                 bot.on('connect', () => {
                     bot.emit('start-matchmaking', botUser);
                 });
-                // Minimal listeners for stability/logging
                 bot.on('disconnect', () => {});
                 bot.on('error', () => {});
                 testBots.push(bot);

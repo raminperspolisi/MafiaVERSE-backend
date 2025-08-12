@@ -29,6 +29,53 @@ function makeBotUser(index = 1) {
   };
 }
 
+const TestLobby = require('./models/TestLobby');
+
+async function persistLobby() {
+  try {
+    await TestLobby.findOneAndUpdate(
+      { lobbyId: 'default' },
+      {
+        $set: {
+          players: waitingPlayers.map(p => ({
+            userId: p.userId,
+            username: p.username,
+            firstName: p.firstName || '',
+            lastName: p.lastName || '',
+            isBot: (p.userId || '').startsWith('bot_'),
+            socketId: p.socketId || null
+          })),
+          updatedAt: new Date()
+        }
+      },
+      { upsert: true, new: true }
+    );
+  } catch (e) {
+    console.error('Persist lobby error:', e.message);
+  }
+}
+
+async function restoreLobby() {
+  try {
+    const doc = await TestLobby.findOne({ lobbyId: 'default' });
+    if (doc && Array.isArray(doc.players)) {
+      waitingPlayers = doc.players.map(p => ({
+        userId: p.userId,
+        username: p.username,
+        firstName: p.firstName,
+        lastName: p.lastName,
+        socketId: null // restored players are offline until they reconnect
+      }));
+      broadcastWaiting(io);
+    }
+  } catch (e) {
+    console.error('Restore lobby error:', e.message);
+  }
+}
+
+// Call restore on startup
+restoreLobby();
+
 function broadcastWaiting(ioInstance) {
   // Emit legacy and new formats to the waiting room
   ioInstance.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
@@ -36,6 +83,8 @@ function broadcastWaiting(ioInstance) {
     count: waitingPlayers.length,
     players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
   });
+  // Persist after broadcasting
+  persistLobby();
 }
 
 function spawnBots(ioInstance, count = 9) {
@@ -179,12 +228,66 @@ app.post('/api/waiting/spawn-bots', (req, res) => {
   }
 });
 
+app.post('/api/waiting/add-one-bot', (req, res) => {
+  try {
+    const startIndex = waitingPlayers.filter(p => (p.userId || '').startsWith('bot_')).length + 1;
+    const bot = makeBotUser(startIndex);
+    waitingPlayers.push(bot);
+    broadcastWaiting(io);
+    
+    // Check if we should start the game
+    if (waitingPlayers.length >= 10) {
+      startWaitingGame(io);
+    }
+    
+    return res.json({ 
+      success: true, 
+      count: waitingPlayers.length,
+      addedBot: {
+        userId: bot.userId,
+        username: bot.username,
+        firstName: bot.firstName,
+        lastName: bot.lastName
+      }
+    });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 app.post('/api/waiting/clear-bots', (req, res) => {
   try {
     clearBots(io);
     return res.json({ success: true, count: waitingPlayers.length });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// REST endpoints to get/save lobby
+app.get('/api/waiting/lobby', async (req, res) => {
+  try {
+    const doc = await TestLobby.findOne({ lobbyId: 'default' });
+    res.json({ success: true, lobby: doc || { lobbyId: 'default', players: [] } });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+app.post('/api/waiting/lobby/save', async (req, res) => {
+  try {
+    const players = Array.isArray(req.body?.players) ? req.body.players : [];
+    waitingPlayers = players.map(p => ({
+      userId: p.userId,
+      username: p.username,
+      firstName: p.firstName || '',
+      lastName: p.lastName || '',
+      socketId: null
+    }));
+    broadcastWaiting(io);
+    res.json({ success: true, count: waitingPlayers.length });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
   }
 });
 
