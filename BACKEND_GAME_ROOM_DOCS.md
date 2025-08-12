@@ -663,6 +663,44 @@ node test-backend-game-room.js
 - **Caching**: کش کردن داده‌های پرتکرار
 - **Compression**: فشرده‌سازی داده‌ها
 
+## 🧪 Testing Utilities (Waiting Lobby)
+
+### `POST /api/waiting/spawn-bots`
+افزودن کاربران تست به صف انتظار تا همه در لابی مشاهده کنند. در صورت رسیدن تعداد به 10، بازی خودکار شروع می‌شود.
+
+```bash
+curl -X POST http://localhost:3000/api/waiting/spawn-bots -H "Content-Type: application/json" -d "{\"count\":9}"
+```
+
+- Body:
+```json
+{
+  "count": 9
+}
+```
+- Response نمونه:
+```json
+{
+  "success": true,
+  "count": 10
+}
+```
+
+### `POST /api/waiting/clear-bots`
+حذف همه ربات‌ها از صف انتظار.
+
+```bash
+curl -X POST http://localhost:3000/api/waiting/clear-bots
+```
+
+- Response نمونه:
+```json
+{
+  "success": true,
+  "count": 1
+}
+```
+
 ---
 
 **این مستندات تمامی قابلیت‌های backend اتاق بازی را پوشش می‌دهد. برای سوالات بیشتر یا درخواست ویژگی‌های جدید، لطفاً با تیم توسعه تماس بگیرید.** 

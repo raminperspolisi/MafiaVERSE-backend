@@ -176,7 +176,10 @@
                 <h2>📋 لابی انتظار</h2>
                 <div class="status-bar">
                     <span>تعداد منتظران: <span class="waiting-count" id="waitingCount">0</span>/10</span>
-                    <button onclick="startMatchmaking()">شروع بازی</button>
+                    <div>
+                        <button onclick="startMatchmaking()">شروع بازی</button>
+                        <button onclick="startTestMode()">حالت تست</button>
+                    </div>
                 </div>
                 <div id="waitingPlayers"></div>
             </div>
@@ -214,6 +217,7 @@
         let currentRoom = null;
         let gameStarted = false;
         let isCurrentSpeaker = false;
+        let testBots = [];
         
         // Initialize
         socket.on('connect', () => {
@@ -310,6 +314,38 @@
         function startMatchmaking() {
             if (!currentUser) return;
             socket.emit('start-matchmaking', currentUser);
+        }
+
+        function startTestMode() {
+            // Prevent duplicate test
+            if (testBots.length > 0) return;
+            // Ensure current tab joins
+            startMatchmaking();
+            // Spawn 9 bot clients
+            for (let i = 1; i <= 9; i++) {
+                const bot = io();
+                const botUser = {
+                    userId: `bot_${i}_${Math.random().toString(36).substr(2, 5)}`,
+                    username: `ربات_${i}`,
+                    firstName: 'ربات',
+                    lastName: String(i)
+                };
+                bot.on('connect', () => {
+                    bot.emit('start-matchmaking', botUser);
+                });
+                // Minimal listeners for stability/logging
+                bot.on('disconnect', () => {});
+                bot.on('error', () => {});
+                testBots.push(bot);
+            }
+        }
+
+        function stopTestMode() {
+            testBots.forEach(b => {
+                try { b.emit('leave-waiting'); } catch (_) {}
+                try { b.disconnect(); } catch (_) {}
+            });
+            testBots = [];
         }
         
         function requestChallenge() {
@@ -416,6 +452,8 @@
                 startMatchmaking();
             }
         }, 1000);
+
+        window.addEventListener('beforeunload', stopTestMode);
     </script>
 </body>
 </html> 

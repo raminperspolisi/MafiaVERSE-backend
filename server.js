@@ -18,6 +18,45 @@ const io = socketIo(server, {
 // Waiting lobby (matchmaking)
 let waitingPlayers = [];
 
+function makeBotUser(index = 1) {
+  const id = `bot_${index}_${Math.random().toString(36).substr(2, 5)}`;
+  return {
+    socketId: null, // no socket for server-side bots
+    userId: id,
+    username: `ربات_${index}`,
+    firstName: 'ربات',
+    lastName: String(index)
+  };
+}
+
+function broadcastWaiting(ioInstance) {
+  // Emit legacy and new formats to the waiting room
+  ioInstance.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
+  ioInstance.to('waiting-room').emit('waiting-players-updated-obj', {
+    count: waitingPlayers.length,
+    players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
+  });
+}
+
+function spawnBots(ioInstance, count = 9) {
+  const startIndex = waitingPlayers.filter(p => (p.userId || '').startsWith('bot_')).length + 1;
+  for (let i = 0; i < count; i++) {
+    const bot = makeBotUser(startIndex + i);
+    if (!waitingPlayers.find(p => p.userId === bot.userId)) {
+      waitingPlayers.push(bot);
+    }
+  }
+  broadcastWaiting(ioInstance);
+  if (waitingPlayers.length >= 10) {
+    startWaitingGame(ioInstance);
+  }
+}
+
+function clearBots(ioInstance) {
+  waitingPlayers = waitingPlayers.filter(p => !(p.userId || '').startsWith('bot_'));
+  broadcastWaiting(ioInstance);
+}
+
 function assignRoles(playerCount) {
   const roles = [];
   const mafiaCount = Math.floor(playerCount / 3); // about one-third mafia
@@ -81,11 +120,7 @@ function startWaitingGame(ioInstance) {
   });
 
   // Update remaining waiting lobby (legacy array + new object)
-  ioInstance.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
-  ioInstance.to('waiting-room').emit('waiting-players-updated-obj', {
-    count: waitingPlayers.length,
-    players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
-  });
+  broadcastWaiting(ioInstance);
 }
 
 // Middleware
@@ -131,6 +166,26 @@ app.get('/game-table', (req, res) => {
 
 app.get('/test-game-room', (req, res) => {
   res.sendFile(path.join(__dirname, 'test-game-room.html'));
+});
+
+// REST endpoint to spawn bots globally (for testing)
+app.post('/api/waiting/spawn-bots', (req, res) => {
+  try {
+    const count = Math.min(parseInt(req.body?.count) || 9, 50);
+    spawnBots(io, count);
+    return res.json({ success: true, count: waitingPlayers.length });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+app.post('/api/waiting/clear-bots', (req, res) => {
+  try {
+    clearBots(io);
+    return res.json({ success: true, count: waitingPlayers.length });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 // Socket.IO connection handling
@@ -510,11 +565,7 @@ io.on('connection', (socket) => {
     socket.join('waiting-room');
 
     // Emit legacy and new formats
-    io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
-    io.to('waiting-room').emit('waiting-players-updated-obj', {
-      count: waitingPlayers.length,
-      players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
-    });
+    broadcastWaiting(io);
 
     // Auto-start when we have 10 or more
     if (waitingPlayers.length >= 10) {
@@ -540,11 +591,7 @@ io.on('connection', (socket) => {
     }
     socket.join('waiting-room');
     // Emit legacy and new formats
-    io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
-    io.to('waiting-room').emit('waiting-players-updated-obj', {
-      count: waitingPlayers.length,
-      players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
-    });
+    broadcastWaiting(io);
     if (waitingPlayers.length >= 10) {
       startWaitingGame(io);
     }
@@ -555,13 +602,14 @@ io.on('connection', (socket) => {
     waitingPlayers = waitingPlayers.filter(p => p.socketId !== socket.id);
     socket.leave('waiting-room');
     if (before !== waitingPlayers.length) {
-      // Emit legacy and new formats
-      io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
-      io.to('waiting-room').emit('waiting-players-updated-obj', {
-        count: waitingPlayers.length,
-        players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
-      });
+      broadcastWaiting(io);
     }
+  });
+
+  // Spawn bots via Socket.IO (test-only)
+  socket.on('spawn-bots', (data) => {
+    const count = Math.min(parseInt(data?.count) || 9, 50);
+    spawnBots(io, count);
   });
 
   // قطع اتصال
@@ -592,12 +640,7 @@ io.on('connection', (socket) => {
     const before = waitingPlayers.length;
     waitingPlayers = waitingPlayers.filter(p => p.socketId !== socket.id);
     if (before !== waitingPlayers.length) {
-      // Emit legacy and new formats
-      io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
-      io.to('waiting-room').emit('waiting-players-updated-obj', {
-        count: waitingPlayers.length,
-        players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
-      });
+      broadcastWaiting(io);
     }
   });
 });
