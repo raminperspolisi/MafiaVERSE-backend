@@ -80,8 +80,9 @@ function startWaitingGame(ioInstance) {
     }
   });
 
-  // Update remaining waiting lobby
-  ioInstance.to('waiting-room').emit('waiting-players-updated', {
+  // Update remaining waiting lobby (legacy array + new object)
+  ioInstance.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
+  ioInstance.to('waiting-room').emit('waiting-players-updated-obj', {
     count: waitingPlayers.length,
     players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
   });
@@ -508,7 +509,9 @@ io.on('connection', (socket) => {
     }
     socket.join('waiting-room');
 
-    io.to('waiting-room').emit('waiting-players-updated', {
+    // Emit legacy and new formats
+    io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
+    io.to('waiting-room').emit('waiting-players-updated-obj', {
       count: waitingPlayers.length,
       players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
     });
@@ -524,9 +527,7 @@ io.on('connection', (socket) => {
     socket.emit('deprecated', { message: 'Use start-matchmaking instead' });
     socket.emit('info', { message: 'Joining waiting lobby...' });
     socket.emit('start-matchmaking-proxy-ack');
-    // Reuse behavior
-    socket.emit('start-matchmaking', userData);
-    // But emit locally for this socket handler
+    // Reuse behavior (do not emit back, just add directly)
     const player = {
       socketId: socket.id,
       userId: userData.userId,
@@ -538,7 +539,9 @@ io.on('connection', (socket) => {
       waitingPlayers.push(player);
     }
     socket.join('waiting-room');
-    io.to('waiting-room').emit('waiting-players-updated', {
+    // Emit legacy and new formats
+    io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
+    io.to('waiting-room').emit('waiting-players-updated-obj', {
       count: waitingPlayers.length,
       players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
     });
@@ -552,7 +555,9 @@ io.on('connection', (socket) => {
     waitingPlayers = waitingPlayers.filter(p => p.socketId !== socket.id);
     socket.leave('waiting-room');
     if (before !== waitingPlayers.length) {
-      io.to('waiting-room').emit('waiting-players-updated', {
+      // Emit legacy and new formats
+      io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
+      io.to('waiting-room').emit('waiting-players-updated-obj', {
         count: waitingPlayers.length,
         players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
       });
@@ -587,7 +592,9 @@ io.on('connection', (socket) => {
     const before = waitingPlayers.length;
     waitingPlayers = waitingPlayers.filter(p => p.socketId !== socket.id);
     if (before !== waitingPlayers.length) {
-      io.to('waiting-room').emit('waiting-players-updated', {
+      // Emit legacy and new formats
+      io.to('waiting-room').emit('waiting-players-updated', waitingPlayers);
+      io.to('waiting-room').emit('waiting-players-updated-obj', {
         count: waitingPlayers.length,
         players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
       });

@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>اتاق بازی مافیا</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Vazirmatn', Arial, sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .status-bar {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .waiting-lobby {
+            background: rgba(255,255,255,0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .player-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .player-card {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            position: relative;
+        }
+        
+        .player-card.current-speaker {
+            background: rgba(255,215,0,0.3);
+            border: 2px solid gold;
+        }
+        
+        .player-card.challenge-request {
+            background: rgba(255,165,0,0.3);
+            border: 2px solid orange;
+        }
+        
+        .player-card.challenge-approved {
+            background: rgba(0,255,0,0.3);
+            border: 2px solid lime;
+        }
+        
+        .player-card.challenge-active {
+            background: rgba(255,0,0,0.3);
+            border: 2px solid red;
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .challenge-badge {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            background: orange;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .challenge-timer {
+            background: rgba(255,0,0,0.2);
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+            margin: 10px 0;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        
+        .role-info {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            display: none;
+        }
+        
+        .waiting-count {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        
+        .game-screen {
+            display: none;
+        }
+        
+        .lobby-screen {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎭 اتاق بازی مافیا</h1>
+        </div>
+        
+        <!-- Waiting Lobby Screen -->
+        <div class="lobby-screen" id="lobbyScreen">
+            <div class="waiting-lobby">
+                <h2>📋 لابی انتظار</h2>
+                <div class="status-bar">
+                    <span>تعداد منتظران: <span class="waiting-count" id="waitingCount">0</span>/10</span>
+                    <button onclick="startMatchmaking()">شروع بازی</button>
+                </div>
+                <div id="waitingPlayers"></div>
+            </div>
+        </div>
+        
+        <!-- Game Screen -->
+        <div class="game-screen" id="gameScreen">
+            <div class="status-bar">
+                <span>بازی در حال اجرا</span>
+                <span id="gamePhase">فاز: روز</span>
+            </div>
+            
+            <div class="role-info" id="roleInfo">
+                <h3>نقش شما: <span id="playerRole"></span></h3>
+                <p id="roleDescription"></p>
+            </div>
+            
+            <div class="challenge-timer" id="challengeTimer" style="display: none;">
+                <span>زمان چالش: <span id="challengeSeconds">40</span> ثانیه</span>
+            </div>
+            
+            <div class="player-list" id="playerList"></div>
+            
+            <div class="controls">
+                <button id="requestChallengeBtn" onclick="requestChallenge()">درخواست چالش</button>
+                <button id="endSpeechBtn" onclick="endSpeech()">پایان صحبت</button>
+                <button onclick="leaveGame()">خروج از بازی</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let currentUser = null;
+        let currentRoom = null;
+        let gameStarted = false;
+        let isCurrentSpeaker = false;
+        
+        // Initialize
+        socket.on('connect', () => {
+            console.log('متصل شدید:', socket.id);
+            // Auto-generate user for testing
+            currentUser = {
+                userId: 'user_' + Math.random().toString(36).substr(2, 9),
+                username: 'بازیکن_' + Math.floor(Math.random() * 1000),
+                firstName: 'کاربر',
+                lastName: 'تست'
+            };
+        });
+        
+        // Waiting lobby events
+        socket.on('waiting-players-updated', (payload) => {
+            console.log('بروزرسانی منتظران:', payload);
+            // Legacy: payload is array; New: object with {count, players}
+            let count = 0;
+            let players = [];
+            if (Array.isArray(payload)) {
+                count = payload.length;
+                players = payload.map(p => ({ userId: p.userId, username: p.username }));
+            } else if (payload && typeof payload === 'object') {
+                count = payload.count || 0;
+                players = payload.players || [];
+            }
+            document.getElementById('waitingCount').textContent = count;
+            const waitingDiv = document.getElementById('waitingPlayers');
+            waitingDiv.innerHTML = players.map(player => 
+                `<div class="player-card">${player.username}</div>`
+            ).join('');
+        });
+
+        socket.on('waiting-players-updated-obj', (data) => {
+            console.log('بروزرسانی منتظران (جدید):', data);
+            document.getElementById('waitingCount').textContent = data.count;
+            const waitingDiv = document.getElementById('waitingPlayers');
+            waitingDiv.innerHTML = (data.players || []).map(player => 
+                `<div class="player-card">${player.username}</div>`
+            ).join('');
+        });
+        
+        socket.on('game-started', (data) => {
+            console.log('بازی شروع شد:', data);
+            gameStarted = true;
+            currentRoom = data.gameId;
+            
+            document.getElementById('lobbyScreen').style.display = 'none';
+            document.getElementById('gameScreen').style.display = 'block';
+            
+            updatePlayerList(data.players);
+        });
+        
+        socket.on('role-assigned', (data) => {
+            console.log('نقش شما:', data.role);
+            document.getElementById('playerRole').textContent = getRoleName(data.role);
+            document.getElementById('roleDescription').textContent = getRoleDescription(data.role);
+            document.getElementById('roleInfo').style.display = 'block';
+        });
+        
+        // Challenge events
+        socket.on('challenge-requests-updated', (data) => {
+            console.log('بروزرسانی چالش:', data);
+            updateChallengeUI(data.challenge);
+        });
+        
+        socket.on('challenge-started', (data) => {
+            console.log('چالش شروع شد:', data);
+            document.getElementById('challengeTimer').style.display = 'block';
+            updateChallengeUI({ active: true, approvedUserId: data.userId });
+        });
+        
+        socket.on('challenge-tick', (data) => {
+            document.getElementById('challengeSeconds').textContent = data.secondsLeft;
+        });
+        
+        socket.on('challenge-ended', (data) => {
+            console.log('چالش پایان یافت:', data);
+            document.getElementById('challengeTimer').style.display = 'none';
+            updateChallengeUI({ active: false });
+        });
+        
+        socket.on('speaking-updated', (data) => {
+            console.log('بروزرسانی گوینده:', data);
+            updateSpeakingUI(data);
+        });
+        
+        socket.on('error', (message) => {
+            console.error('خطا:', message);
+            alert('خطا: ' + message);
+        });
+        
+        // Functions
+        function startMatchmaking() {
+            if (!currentUser) return;
+            socket.emit('start-matchmaking', currentUser);
+        }
+        
+        function requestChallenge() {
+            if (!currentUser || !currentRoom) return;
+            socket.emit('request-challenge', {
+                roomId: currentRoom,
+                userId: currentUser.userId
+            });
+        }
+        
+        function endSpeech() {
+            if (!currentUser || !currentRoom) return;
+            socket.emit('end-speech', {
+                roomId: currentRoom,
+                speakerUserId: currentUser.userId
+            });
+        }
+        
+        function leaveGame() {
+            if (gameStarted) {
+                socket.emit('leave-waiting');
+                location.reload();
+            }
+        }
+        
+        function updatePlayerList(players) {
+            const playerList = document.getElementById('playerList');
+            playerList.innerHTML = players.map(player => `
+                <div class="player-card" data-user-id="${player.userId}">
+                    <div class="challenge-badge" style="display: none;">!</div>
+                    <h4>${player.username}</h4>
+                    <p>${player.firstName} ${player.lastName}</p>
+                    <p>وضعیت: ${player.isAlive ? 'زنده' : 'مرده'}</p>
+                </div>
+            `).join('');
+        }
+        
+        function updateChallengeUI(challenge) {
+            const playerCards = document.querySelectorAll('.player-card');
+            playerCards.forEach(card => {
+                const userId = card.dataset.userId;
+                card.classList.remove('challenge-request', 'challenge-approved', 'challenge-active');
+                
+                if (challenge.requests) {
+                    const request = challenge.requests.find(r => r.userId === userId);
+                    if (request) {
+                        card.classList.add('challenge-request');
+                        const badge = card.querySelector('.challenge-badge');
+                        if (badge) {
+                            badge.style.display = 'flex';
+                            badge.textContent = '!';
+                        }
+                    }
+                }
+                
+                if (challenge.approvedUserId === userId) {
+                    card.classList.add('challenge-approved');
+                }
+                
+                if (challenge.active && challenge.approvedUserId === userId) {
+                    card.classList.add('challenge-active');
+                }
+            });
+        }
+        
+        function updateSpeakingUI(data) {
+            const playerCards = document.querySelectorAll('.player-card');
+            playerCards.forEach(card => {
+                card.classList.remove('current-speaker');
+                if (card.dataset.userId === data.currentSpeakerId) {
+                    card.classList.add('current-speaker');
+                    isCurrentSpeaker = data.currentSpeakerId === currentUser?.userId;
+                }
+            });
+            
+            // Update button states
+            document.getElementById('requestChallengeBtn').disabled = isCurrentSpeaker;
+            document.getElementById('endSpeechBtn').disabled = !isCurrentSpeaker;
+        }
+        
+        function getRoleName(role) {
+            const names = {
+                'mafia': 'مافیا',
+                'doctor': 'دکتر',
+                'detective': 'کارآگاه',
+                'citizen': 'شهروند'
+            };
+            return names[role] || role;
+        }
+        
+        function getRoleDescription(role) {
+            const descriptions = {
+                'mafia': 'شما عضو مافیا هستید. هدف شما کشتن تمام شهروندان است.',
+                'doctor': 'شما دکتر هستید. می‌توانید هر شب یک نفر را محافظت کنید.',
+                'detective': 'شما کارآگاه هستید. می‌توانید هر شب هویت یک نفر را بررسی کنید.',
+                'citizen': 'شما شهروند معمولی هستید. هدف شما پیدا کردن و حذف مافیا است.'
+            };
+            return descriptions[role] || '';
+        }
+        
+        // Auto-start matchmaking for testing
+        setTimeout(() => {
+            if (currentUser) {
+                startMatchmaking();
+            }
+        }, 1000);
+    </script>
+</body>
+</html> 
