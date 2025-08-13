@@ -4,8 +4,8 @@
 
 class GameRoom {
   constructor(data = {}) {
-    this.id = data.id || this.generateId();
-    this.name = data.name || `اتاق بازی ${this.id.slice(-4)}`;
+    this.id = data.id || `room_${Date.now()}_${Math.random().toString(36).substr(2, 3)}`;
+    this.name = data.name || 'اتاق بازی جدید';
     this.maxPlayers = data.maxPlayers || 8;
     this.currentPlayers = data.currentPlayers || [];
     this.status = data.status || 'waiting'; // waiting, starting, playing, finished
@@ -21,13 +21,12 @@ class GameRoom {
     this.ownerId = data.ownerId || null;
     this.isPrivate = data.isPrivate || false;
     this.password = data.password || null;
-
-    // Speaking & challenge state
     this.speakingQueue = Array.isArray(data.speakingQueue) ? data.speakingQueue : [];
     this.currentSpeakerId = data.currentSpeakerId || null;
     this.challengeRequests = [];
     this.approvedChallengeUserId = null;
     this.challengeActive = false;
+    this.gamePhase = data.gamePhase || 'waiting'; // waiting, introduction, night, day
   }
 
   generateId() {

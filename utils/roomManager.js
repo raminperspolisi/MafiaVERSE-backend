@@ -177,13 +177,48 @@ class RoomManager {
 
   // شروع بازی
   startGame(roomId) {
-    const room = this.getRoom(roomId);
+    const room = this.rooms.get(roomId);
     if (!room) {
       throw new Error('اتاق یافت نشد');
     }
 
-    const gameData = room.startGame();
-    console.log(`🎮 بازی در اتاق ${roomId} شروع شد`);
+    if (room.status !== 'waiting') {
+      throw new Error('بازی قبلاً شروع شده است');
+    }
+
+    // Check if all players are ready
+    const readyPlayers = room.currentPlayers.filter(p => p.isReady);
+    if (readyPlayers.length < room.maxPlayers) {
+      throw new Error('همه بازیکنان آماده نیستند');
+    }
+
+    // Start game
+    room.status = 'playing';
+    room.gamePhase = 'introduction'; // Start with introduction phase
+    
+    // Initialize speaking queue for introduction
+    room.speakingQueue = room.currentPlayers.map(p => p.id);
+    room.currentSpeakerId = room.speakingQueue[0];
+
+    // Assign roles if not already assigned
+    if (!room.currentPlayers.some(p => p.role)) {
+      const roles = this.assignRoles(room.currentPlayers.length);
+      room.currentPlayers.forEach((player, index) => {
+        player.role = roles[index];
+      });
+    }
+
+    const gameData = {
+      players: room.currentPlayers.map(p => ({
+        id: p.id,
+        username: p.username,
+        role: p.role,
+        isAlive: p.isAlive
+      })),
+      settings: room.gameSettings,
+      phase: room.gamePhase
+    };
+
     return { room, gameData };
   }
 

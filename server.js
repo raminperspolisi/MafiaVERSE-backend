@@ -107,18 +107,33 @@ function clearBots(ioInstance) {
 }
 
 function assignRoles(playerCount) {
-  const roles = [];
-  const mafiaCount = Math.floor(playerCount / 3); // about one-third mafia
-  for (let i = 0; i < mafiaCount; i++) roles.push('mafia');
-  // Add special roles if space remains
-  if (roles.length < playerCount) roles.push('doctor');
-  if (roles.length < playerCount) roles.push('detective');
-  while (roles.length < playerCount) roles.push('citizen');
-  // Shuffle
+  if (playerCount !== 10) {
+    throw new Error('سناریوی تفنگدار دقیقاً نیاز به 10 بازیکن دارد');
+  }
+  
+  // Gunner scenario: 7 Citizens + 3 Mafia
+  const roles = [
+    // Citizens (7)
+    'doctor',      // دکتر
+    'bodyguard',   // نگهبان
+    'detective',   // کارآگاه
+    'commando',    // تکاور
+    'gunner',      // تفنگدار
+    'citizen-a',   // شهروند ساده اول
+    'citizen-b',   // شهروند ساده دوم
+    
+    // Mafia (3)
+    'godfather',   // پدرخوانده
+    'lecter',      // دکتر لکتر
+    'kidnapper'    // گروگانگیر
+  ];
+  
+  // Shuffle roles
   for (let i = roles.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [roles[i], roles[j]] = [roles[j], roles[i]];
   }
+  
   return roles;
 }
 
@@ -154,7 +169,7 @@ function startWaitingGame(ioInstance) {
       lastName: p.lastName,
       isAlive: p.isAlive
     })),
-    phase: 'night',
+    phase: 'introduction', // Start with introduction phase
     day: 1
   });
 
@@ -163,13 +178,131 @@ function startWaitingGame(ioInstance) {
     const playerSocket = ioInstance.sockets.sockets.get(player.socketId);
     if (playerSocket) {
       playerSocket.emit('role-assigned', {
-        role: player.role
+        role: player.role,
+        gameId: gameId
       });
     }
   });
 
   // Update remaining waiting lobby (legacy array + new object)
   broadcastWaiting(ioInstance);
+}
+
+// Night phase management
+function startNightPhase(ioInstance, gameId, gamePlayers) {
+  console.log(`🌙 شب شروع شد برای بازی ${gameId}`);
+  
+  // Notify all players that night has started
+  ioInstance.to(`game-${gameId}`).emit('night-started', {
+    gameId,
+    phase: 'night',
+    duration: 60 // 1 minute
+  });
+
+  // Send role-specific night information
+  gamePlayers.forEach(player => {
+    const playerSocket = ioInstance.sockets.sockets.get(player.socketId);
+    if (!playerSocket) return;
+
+    if (player.role === 'godfather' || player.role === 'lecter') {
+      // Godfather and Lecter can see each other and communicate
+      const mafiaPartners = gamePlayers.filter(p => 
+        (p.role === 'godfather' || p.role === 'lecter') && p.userId !== player.userId
+      );
+      
+      playerSocket.emit('night-role-info', {
+        gameId,
+        role: player.role,
+        canCommunicate: true,
+        visiblePlayers: mafiaPartners.map(p => ({
+          userId: p.userId,
+          username: p.username,
+          role: p.role,
+          isMafia: true,
+          canTalk: true
+        })),
+        kidnapperVisible: gamePlayers.filter(p => p.role === 'kidnapper').map(p => ({
+          userId: p.userId,
+          username: p.username,
+          role: p.role,
+          isMafia: true,
+          canTalk: false
+        }))
+      });
+    } else if (player.role === 'kidnapper') {
+      // Kidnapper can see all mafia but cannot communicate with anyone
+      const allMafia = gamePlayers.filter(p => 
+        p.role === 'godfather' || p.role === 'lecter' || p.role === 'kidnapper'
+      );
+      
+      playerSocket.emit('night-role-info', {
+        gameId,
+        role: player.role,
+        canCommunicate: false, // Kidnapper cannot communicate
+        visiblePlayers: allMafia.map(p => ({
+          userId: p.userId,
+          username: p.username,
+          role: p.role,
+          isMafia: true,
+          canTalk: false // Cannot talk to anyone
+        }))
+      });
+    } else {
+      // Citizens are asleep and see nothing
+      playerSocket.emit('night-role-info', {
+        gameId,
+        role: player.role,
+        canCommunicate: false,
+        visiblePlayers: [],
+        message: 'شما خواب هستید و چیزی نمی‌بینید'
+      });
+    }
+  });
+
+  // Start 1-minute night timer
+  let secondsLeft = 60;
+  const nightTimer = setInterval(() => {
+    secondsLeft--;
+    
+    // Send countdown to all players
+    ioInstance.to(`game-${gameId}`).emit('night-countdown', {
+      gameId,
+      secondsLeft,
+      phase: 'night'
+    });
+    
+    if (secondsLeft <= 0) {
+      clearInterval(nightTimer);
+      endNightPhase(ioInstance, gameId, gamePlayers);
+    }
+  }, 1000);
+}
+
+function endNightPhase(ioInstance, gameId, gamePlayers) {
+  console.log(`🌅 شب پایان یافت، روز شروع شد برای بازی ${gameId}`);
+  
+  // Notify all players that night has ended
+  ioInstance.to(`game-${gameId}`).emit('night-ended', {
+    gameId,
+    phase: 'day',
+    day: 1
+  });
+  
+  // Start day phase with speaking queue
+  const speakingQueue = gamePlayers.map(p => p.userId);
+  const currentSpeakerId = speakingQueue[0];
+  
+  ioInstance.to(`game-${gameId}`).emit('speaking-updated', {
+    roomId: gameId,
+    currentSpeakerId: currentSpeakerId,
+    speakingQueue: speakingQueue,
+    challenge: {
+      currentSpeakerId: currentSpeakerId,
+      approvedUserId: null,
+      requests: [],
+      active: false
+    }
+  });
 }
 
 // Middleware
@@ -576,11 +709,33 @@ io.on('connection', (socket) => {
   socket.on('end-speech', async (data) => {
     try {
       const { roomId, speakerUserId } = data;
-      if (!roomId || !speakerUserId) return socket.emit('error', 'داده‌های ناقص');
+      if (!roomId || !speakerUserId) return socket.emit('error', 'شناسه اتاق الزامی است');
+
+      // Check if this is introduction phase and last speaker
+      const room = roomManager.getRoom(roomId);
+      if (!room) return socket.emit('error', 'اتاق یافت نشد');
+
+      // If this is introduction phase and last speaker, start night
+      if (room.gamePhase === 'introduction') {
+        const currentSpeakerIndex = room.speakingQueue.indexOf(speakerUserId);
+        if (currentSpeakerIndex === room.speakingQueue.length - 1) {
+          // Last speaker finished, start night phase
+          const gamePlayers = room.currentPlayers.map(p => ({
+            userId: p.id,
+            username: p.username,
+            role: p.role,
+            isAlive: p.isAlive,
+            socketId: p.socketId
+          }));
+          
+          startNightPhase(io, roomId, gamePlayers);
+          return;
+        }
+      }
 
       // Try to start approved challenge, otherwise go to next speaker
       const result = roomManager.endSpeakerAndMaybeStartChallenge(roomId, speakerUserId);
-      const room = roomManager.getRoom(roomId);
+      const updatedRoom = roomManager.getRoom(roomId);
 
       if (result.startedChallengeFor) {
         const challengeUserId = result.startedChallengeFor;
@@ -610,8 +765,8 @@ io.on('connection', (socket) => {
             io.to(roomId).emit('speaking-updated', {
               roomId,
               currentSpeakerId: nextSpeakerId,
-              speakingQueue: room.speakingQueue,
-              challenge: room.getChallengeState()
+              speakingQueue: updatedRoom.speakingQueue,
+              challenge: updatedRoom.getChallengeState()
             });
           }
         }, 1000);
@@ -622,8 +777,8 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('speaking-updated', {
           roomId,
           currentSpeakerId: result.nextSpeakerId,
-          speakingQueue: room.speakingQueue,
-          challenge: room.getChallengeState()
+          speakingQueue: updatedRoom.speakingQueue,
+          challenge: updatedRoom.getChallengeState()
         });
       }
 

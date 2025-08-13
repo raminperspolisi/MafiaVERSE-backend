@@ -84,6 +84,72 @@
             animation: pulse 1s infinite;
         }
         
+        .player-card.masked {
+            position: relative;
+        }
+        
+        .player-card.masked::after {
+            content: '🎭';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
+            z-index: 10;
+        }
+        
+        .player-card.mafia-visible {
+            background: rgba(255,0,0,0.2);
+            border: 2px solid #ff4444;
+        }
+        
+        .night-phase {
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        
+        .night-timer {
+            font-size: 24px;
+            font-weight: bold;
+            color: #ff4444;
+            margin: 10px 0;
+        }
+        
+        .mafia-chat {
+            background: rgba(255,0,0,0.1);
+            border: 1px solid #ff4444;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+        }
+        
+        .mafia-chat input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ff4444;
+            border-radius: 4px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            margin-bottom: 10px;
+        }
+        
+        .mafia-chat button {
+            background: #ff4444;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .mafia-chat button:hover {
+            background: #cc3333;
+        }
+        
         @keyframes pulse {
             0% { transform: scale(1); }
             50% { transform: scale(1.05); }
@@ -189,7 +255,22 @@
         <div class="game-screen" id="gameScreen">
             <div class="status-bar">
                 <span>بازی در حال اجرا</span>
-                <span id="gamePhase">فاز: روز</span>
+                <span id="gamePhase">فاز: معرفی</span>
+            </div>
+            
+            <!-- Night Phase UI -->
+            <div class="night-phase" id="nightPhase" style="display: none;">
+                <h3>🌙 شب معارفه</h3>
+                <div class="night-timer" id="nightTimer">زمان باقی‌مانده: 60 ثانیه</div>
+                <p>شب معارفه شروع شده است. ماسک‌ها برداشته شده و مافیا می‌توانند همدیگر را ببینند.</p>
+                
+                <!-- Mafia Chat (only visible to mafia) -->
+                <div class="mafia-chat" id="mafiaChat" style="display: none;">
+                    <h4>💬 چت مافیا</h4>
+                    <div id="mafiaMessages"></div>
+                    <input type="text" id="mafiaInput" placeholder="پیام خود را بنویسید...">
+                    <button onclick="sendMafiaMessage()">ارسال</button>
+                </div>
             </div>
             
             <div class="role-info" id="roleInfo">
@@ -282,6 +363,50 @@
         socket.on('challenge-requests-updated', (data) => {
             console.log('بروزرسانی چالش:', data);
             updateChallengeUI(data.challenge);
+        });
+        
+        // Night phase events
+        socket.on('night-started', (data) => {
+            console.log('شب شروع شد:', data);
+            document.getElementById('nightPhase').style.display = 'block';
+            document.getElementById('gamePhase').textContent = 'فاز: شب';
+            
+            // Show masked avatars for all players
+            const playerCards = document.querySelectorAll('.player-card');
+            playerCards.forEach(card => {
+                card.classList.add('masked');
+            });
+        });
+        
+        socket.on('night-role-info', (data) => {
+            console.log('اطلاعات شب نقش:', data);
+            
+            if (data.canCommunicate) {
+                // Show mafia chat for mafia members
+                document.getElementById('mafiaChat').style.display = 'block';
+                
+                // Update player visibility based on role
+                updateNightPlayerVisibility(data.visiblePlayers);
+            }
+        });
+        
+        socket.on('night-countdown', (data) => {
+            document.getElementById('nightTimer').textContent = `زمان باقی‌مانده: ${data.secondsLeft} ثانیه`;
+        });
+        
+        socket.on('night-ended', (data) => {
+            console.log('شب پایان یافت:', data);
+            document.getElementById('nightPhase').style.display = 'none';
+            document.getElementById('gamePhase').textContent = 'فاز: روز';
+            
+            // Remove masks and mafia visibility
+            const playerCards = document.querySelectorAll('.player-card');
+            playerCards.forEach(card => {
+                card.classList.remove('masked', 'mafia-visible');
+            });
+            
+            // Hide mafia chat
+            document.getElementById('mafiaChat').style.display = 'none';
         });
         
         socket.on('challenge-started', (data) => {
@@ -401,6 +526,17 @@
                 </div>
             `).join('');
         }
+
+        function updateNightPlayerVisibility(visiblePlayers) {
+            const playerCards = document.querySelectorAll('.player-card');
+            playerCards.forEach(card => {
+                const userId = card.dataset.userId;
+                card.classList.remove('mafia-visible');
+                if (visiblePlayers.includes(userId)) {
+                    card.classList.add('mafia-visible');
+                }
+            });
+        }
         
         function updateChallengeUI(challenge) {
             const playerCards = document.querySelectorAll('.player-card');
@@ -448,21 +584,54 @@
         function getRoleName(role) {
             const names = {
                 'mafia': 'مافیا',
+                'godfather': 'پدرخوانده',
+                'lecter': 'دکتر لکتر',
+                'kidnapper': 'گروگانگیر',
                 'doctor': 'دکتر',
                 'detective': 'کارآگاه',
-                'citizen': 'شهروند'
+                'gunner': 'تفنگدار',
+                'commando': 'تکاور',
+                'bodyguard': 'نگهبان',
+                'citizen': 'شهروند ساده',
+                'citizen-a': 'شهروند ساده اول',
+                'citizen-b': 'شهروند ساده دوم'
             };
             return names[role] || role;
         }
         
         function getRoleDescription(role) {
             const descriptions = {
-                'mafia': 'شما عضو مافیا هستید. هدف شما کشتن تمام شهروندان است.',
-                'doctor': 'شما دکتر هستید. می‌توانید هر شب یک نفر را محافظت کنید.',
+                'godfather': 'شما پدرخوانده مافیا هستید. می‌توانید با دکتر لکتر در شب صحبت کنید.',
+                'lecter': 'شما دکتر لکتر هستید. می‌توانید با پدرخوانده در شب صحبت کنید.',
+                'kidnapper': 'شما گروگانگیر هستید. می‌توانید همه مافیا را ببینید اما با هیچ‌کس نمی‌توانید صحبت کنید.',
+                'doctor': 'شما دکتر شهروند هستید. می‌توانید هر شب یک نفر را محافظت کنید.',
                 'detective': 'شما کارآگاه هستید. می‌توانید هر شب هویت یک نفر را بررسی کنید.',
+                'gunner': 'شما تفنگدار هستید. می‌توانید هر شب یک نفر را بکشید.',
+                'commando': 'شما تکاور هستید. مهارت‌های ویژه نظامی دارید.',
+                'bodyguard': 'شما نگهبان هستید. می‌توانید از بازیکنان محافظت کنید.',
+                'citizen-a': 'شما شهروند ساده اول هستید. هدف شما پیدا کردن و حذف مافیا است.',
+                'citizen-b': 'شما شهروند ساده دوم هستید. هدف شما پیدا کردن و حذف مافیا است.',
+                'mafia': 'شما عضو مافیا هستید. هدف شما کشتن تمام شهروندان است.',
                 'citizen': 'شما شهروند معمولی هستید. هدف شما پیدا کردن و حذف مافیا است.'
             };
             return descriptions[role] || '';
+        }
+        
+        function sendMafiaMessage() {
+            const input = document.getElementById('mafiaInput');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            const messagesDiv = document.getElementById('mafiaMessages');
+            const messageElement = document.createElement('div');
+            messageElement.textContent = `${currentUser?.username}: ${message}`;
+            messageElement.style.marginBottom = '5px';
+            messagesDiv.appendChild(messageElement);
+            
+            input.value = '';
+            
+            // Scroll to bottom
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
         // Auto-start matchmaking for testing
