@@ -303,6 +303,9 @@ function endNightPhase(ioInstance, gameId, gamePlayers) {
       active: false
     }
   });
+
+  // Start timed speaking for day phase
+  startSpeakingTurn(gameId, 60);
 }
 
 // Middleware
@@ -331,6 +334,75 @@ const roomManager = require('./utils/roomManager');
 
 // Keep timers per room for challenge countdowns
 const roomTimers = new Map();
+
+// Speaking timer per room: starts a 60s turn for current speaker and auto-advances
+function startSpeakingTurn(roomId, durationSec = 60) {
+  try {
+    const room = roomManager.getRoom(roomId);
+    if (!room) return;
+
+    const currentSpeakerId = room.currentSpeakerId;
+    if (!currentSpeakerId) return;
+
+    // Clear any previous timer for this room
+    const prev = roomTimers.get(roomId);
+    if (prev) clearInterval(prev);
+
+    let secondsLeft = durationSec;
+    io.to(roomId).emit('speaking-started', {
+      roomId,
+      currentSpeakerId,
+      duration: durationSec
+    });
+
+    const interval = setInterval(() => {
+      secondsLeft -= 1;
+      io.to(roomId).emit('speaking-tick', { roomId, currentSpeakerId, secondsLeft });
+      if (secondsLeft <= 0) {
+        clearInterval(interval);
+        roomTimers.delete(roomId);
+
+        // Auto-end current speaker and move forward (respecting challenge rules)
+        try {
+          const result = roomManager.endSpeakerAndMaybeStartChallenge(roomId, currentSpeakerId);
+          const updatedRoom = roomManager.getRoom(roomId);
+
+          io.to(roomId).emit('speaking-ended', { roomId, speakerUserId: currentSpeakerId });
+
+          if (result && result.startedChallengeFor) {
+            // A challenge has been approved; do not start speaking timer. Front-end handles challenge flow.
+            io.to(roomId).emit('challenge-requests-updated', {
+              roomId,
+              challenge: updatedRoom.getChallengeState()
+            });
+            return;
+          }
+
+          // Proceed to next speaker
+          io.to(roomId).emit('speaking-updated', {
+            roomId,
+            currentSpeakerId: result.nextSpeakerId,
+            speakingQueue: updatedRoom.speakingQueue,
+            challenge: updatedRoom.getChallengeState()
+          });
+
+          // If we still have a speaker, start the next turn automatically
+          if (result.nextSpeakerId) {
+            startSpeakingTurn(roomId, durationSec);
+          } else {
+            io.to(roomId).emit('speaking-all-done', { roomId });
+          }
+        } catch (e) {
+          console.error('Auto advance speaking error:', e.message);
+        }
+      }
+    }, 1000);
+
+    roomTimers.set(roomId, interval);
+  } catch (e) {
+    console.error('Start speaking timer error:', e.message);
+  }
+}
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -600,6 +672,8 @@ io.on('connection', (socket) => {
             room: updatedRoom.getFullInfo(),
             gameData: gameData
           });
+          // Start first speaker's timed turn after game starts (introduction)
+          startSpeakingTurn(roomId, 60);
         }
       }, 1000);
 
@@ -768,6 +842,8 @@ io.on('connection', (socket) => {
               speakingQueue: updatedRoom.speakingQueue,
               challenge: updatedRoom.getChallengeState()
             });
+            // Begin next speaker's timed turn
+            if (nextSpeakerId) startSpeakingTurn(roomId, 60);
           }
         }, 1000);
         roomTimers.set(roomId, interval);
@@ -780,6 +856,8 @@ io.on('connection', (socket) => {
           speakingQueue: updatedRoom.speakingQueue,
           challenge: updatedRoom.getChallengeState()
         });
+        // Begin next speaker's timed turn
+        if (result.nextSpeakerId) startSpeakingTurn(roomId, 60);
       }
 
     } catch (error) {
