@@ -83,6 +83,30 @@ function broadcastWaiting(ioInstance) {
     count: waitingPlayers.length,
     players: waitingPlayers.map(p => ({ userId: p.userId, username: p.username }))
   });
+
+  // ثبت واکنش (لایک / دیسلایک) برای گوینده فعلی (در سطح هر اتصال)
+  socket.on('send-reaction', (data) => {
+    try {
+      const { roomId, userId, type } = data || {};
+      if (!roomId || !userId || !type) return socket.emit('error', 'داده‌های ناقص');
+      const room = roomManager.getRoom(roomId);
+      if (!room) return socket.emit('error', 'اتاق یافت نشد');
+      const targetUserId = room.currentSpeakerId;
+      if (!targetUserId) return;
+      if (!['like', 'dislike'].includes(type)) return socket.emit('error', 'نوع واکنش نامعتبر است');
+
+      const counts = room.applyReaction(room.day || 1, targetUserId, userId, type);
+      io.to(roomId).emit('reaction-updated', {
+        roomId,
+        targetUserId,
+        likes: counts.likes,
+        dislikes: counts.dislikes
+      });
+    } catch (e) {
+      console.error('خطا در ثبت واکنش:', e);
+      socket.emit('error', 'خطا در ثبت واکنش');
+    }
+  });
   // Persist after broadcasting
   persistLobby();
 }
@@ -287,6 +311,8 @@ function endNightPhase(ioInstance, gameId, gamePlayers) {
     phase: 'day',
     day: 1
   });
+  // انتشار شمارنده روز برای UI کلاینت‌ها
+  ioInstance.to(`game-${gameId}`).emit('game-day-updated', { roomId: gameId, day: 1 });
   
   // Start day phase with speaking queue
   const speakingQueue = gamePlayers.map(p => p.userId);
@@ -354,6 +380,19 @@ function startSpeakingTurn(roomId, durationSec = 60) {
       currentSpeakerId,
       duration: durationSec
     });
+
+    // Initialize reaction counters for the current speaker
+    try {
+      const counts = room.getReactions(room.day || 1, currentSpeakerId);
+      io.to(roomId).emit('reaction-updated', {
+        roomId,
+        targetUserId: currentSpeakerId,
+        likes: counts.likes,
+        dislikes: counts.dislikes
+      });
+    } catch (e) {
+      // ignore if room does not support reactions yet
+    }
 
     const interval = setInterval(() => {
       secondsLeft -= 1;
@@ -553,6 +592,11 @@ io.on('connection', (socket) => {
         player: player
       });
 
+      // ارسال نقش به صورت خصوصی برای نمایش در UI پایین سمت راست
+      socket.emit('your-role', { role: player.role });
+      // ارسال شمارنده روز فعلی برای مقداردهی اولیه UI
+      socket.emit('game-day-updated', { roomId, day: room.day || 1 });
+
       console.log(`👤 ${username} به اتاق ${roomId} پیوست`);
 
     } catch (error) {
@@ -672,6 +716,8 @@ io.on('connection', (socket) => {
             room: updatedRoom.getFullInfo(),
             gameData: gameData
           });
+          // انتشار شمارنده روز برای UI
+          io.to(roomId).emit('game-day-updated', { roomId, day: updatedRoom.day || 1 });
           // Start first speaker's timed turn after game starts (introduction)
           startSpeakingTurn(roomId, 60);
         }
@@ -842,6 +888,16 @@ io.on('connection', (socket) => {
               speakingQueue: updatedRoom.speakingQueue,
               challenge: updatedRoom.getChallengeState()
             });
+            // انتشار شمارنده واکنش‌های گوینده جدید
+            if (nextSpeakerId) {
+              const counts = updatedRoom.getReactions(updatedRoom.day || 1, nextSpeakerId);
+              io.to(roomId).emit('reaction-updated', {
+                roomId,
+                targetUserId: nextSpeakerId,
+                likes: counts.likes,
+                dislikes: counts.dislikes
+              });
+            }
             // Begin next speaker's timed turn
             if (nextSpeakerId) startSpeakingTurn(roomId, 60);
           }
@@ -856,6 +912,16 @@ io.on('connection', (socket) => {
           speakingQueue: updatedRoom.speakingQueue,
           challenge: updatedRoom.getChallengeState()
         });
+        // انتشار شمارنده واکنش‌های گوینده جدید
+        if (result.nextSpeakerId) {
+          const counts = updatedRoom.getReactions(updatedRoom.day || 1, result.nextSpeakerId);
+          io.to(roomId).emit('reaction-updated', {
+            roomId,
+            targetUserId: result.nextSpeakerId,
+            likes: counts.likes,
+            dislikes: counts.dislikes
+          });
+        }
         // Begin next speaker's timed turn
         if (result.nextSpeakerId) startSpeakingTurn(roomId, 60);
       }

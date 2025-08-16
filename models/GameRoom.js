@@ -4,6 +4,7 @@
 
 class GameRoom {
   constructor(data = {}) {
+
     this.id = data.id || `room_${Date.now()}_${Math.random().toString(36).substr(2, 3)}`;
     this.name = data.name || 'اتاق بازی جدید';
     this.maxPlayers = data.maxPlayers || 8;
@@ -27,6 +28,10 @@ class GameRoom {
     this.approvedChallengeUserId = null;
     this.challengeActive = false;
     this.gamePhase = data.gamePhase || 'waiting'; // waiting, introduction, night, day
+    // Day counter & reactions (in-memory)
+    this.day = Number.isInteger(data.day) ? data.day : 1;
+    // Structure: { [dayNumber]: { [targetUserId]: { likes: Set<userId>, dislikes: Set<userId> } } }
+    this.reactions = {};
   }
 
   generateId() {
@@ -202,6 +207,45 @@ class GameRoom {
     this.challengeActive = false;
     // After challenge ends, move to next speaker in queue
     return this.moveToNextSpeaker();
+  }
+
+  // --- Reactions helpers (like/dislike) ---
+  initReactionsForDay(dayNumber) {
+    const d = Number.isInteger(dayNumber) ? dayNumber : this.day || 1;
+    if (!this.reactions[d]) this.reactions[d] = {};
+    return this.reactions[d];
+  }
+
+  applyReaction(dayNumber, targetUserId, fromUserId, type /* 'like' | 'dislike' */) {
+    const d = Number.isInteger(dayNumber) ? dayNumber : this.day || 1;
+    const dayBucket = this.initReactionsForDay(d);
+    if (!dayBucket[targetUserId]) {
+      dayBucket[targetUserId] = { likes: new Set(), dislikes: new Set() };
+    }
+    const rec = dayBucket[targetUserId];
+
+    // Remove previous choice (toggle behavior)
+    rec.likes.delete(fromUserId);
+    rec.dislikes.delete(fromUserId);
+
+    if (type === 'like') rec.likes.add(fromUserId);
+    else if (type === 'dislike') rec.dislikes.add(fromUserId);
+
+    return {
+      likes: rec.likes.size,
+      dislikes: rec.dislikes.size
+    };
+  }
+
+  getReactions(dayNumber, targetUserId) {
+    const d = Number.isInteger(dayNumber) ? dayNumber : this.day || 1;
+    const dayBucket = this.reactions[d] || {};
+    const rec = dayBucket[targetUserId];
+    if (!rec) return { likes: 0, dislikes: 0 };
+    return {
+      likes: rec.likes instanceof Set ? rec.likes.size : Array.isArray(rec.likes) ? rec.likes.length : 0,
+      dislikes: rec.dislikes instanceof Set ? rec.dislikes.size : Array.isArray(rec.dislikes) ? rec.dislikes.length : 0
+    };
   }
 
   // شروع بازی
